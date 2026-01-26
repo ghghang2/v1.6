@@ -236,15 +236,14 @@ def main():
     REPO_PATH = Path(__file__).parent
 
     # ---- Session state ----------------------------------------------------
-    if "history" not in st.session_state:
-        st.session_state.history = []          # [(user, bot), ...]
-    if "system_prompt" not in st.session_state:
-        st.session_state.system_prompt = DEFAULT_SYSTEM_PROMPT
-    if "repo_docs" not in st.session_state:
-        st.session_state.repo_docs = ""        # will hold the full codebase
-    if "has_pushed" not in st.session_state:
-        # Initialise based on the current git state
-        st.session_state.has_pushed = is_repo_up_to_date(REPO_PATH)
+    st.session_state.history = st.session_state.get("history", [])
+    st.session_state.system_prompt = st.session_state.get(
+        "system_prompt", DEFAULT_SYSTEM_PROMPT
+    )
+    st.session_state.repo_docs = st.session_state.get("repo_docs", "")
+
+    # Re‑compute every time the script runs
+    st.session_state.has_pushed = is_repo_up_to_date(REPO_PATH)
 
     # ---- Sidebar ----------------------------------------------------------
     with st.sidebar:
