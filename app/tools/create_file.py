@@ -2,25 +2,41 @@
 """
 Tool that creates a new file under the repository root.
 
-The function validates the target path so that it cannot escape the
-repository root (prevents directory traversal).  It creates any missing
-parent directories, writes the supplied content, and returns a JSON
-string containing either a `result` key (success) or an `error` key
-(failure).
+This module exposes a **single callable** named ``func`` – the
+``tools/__init__`` loader looks for that attribute (or falls back to the
+first callable in the module).  The module also supplies ``name`` and
+``description`` attributes so that the tool can be discovered
+automatically and the OpenAI function‑calling schema can be built.
 
-The JSON format is compatible with the OpenAI function‑calling schema
-used by the chat UI.
+The public API of this module is intentionally tiny:
+* ``func`` – the function that implements the tool
+* ``name`` – the name the model will use to refer to the tool
+* ``description`` – a short human‑readable description
+
+The function returns a **JSON string**.  On success it contains a
+``result`` key; on failure it contains an ``error`` key.  The format
+matches the expectations of the OpenAI function‑calling workflow
+present in :mod:`app.chat`.
+
+The module is deliberately free of side‑effects and does not depend
+on any external configuration – it only needs the repository root,
+which is derived from the location of this file.
 """
 
+from __future__ import annotations
+
 import json
-import pathlib
+from pathlib import Path
 from typing import Dict
 
+# --------------------------------------------------------------------------- #
+#  Helpers
+# --------------------------------------------------------------------------- #
 
-def _safe_resolve(repo_root: pathlib.Path, rel_path: str) -> pathlib.Path:
+def _safe_resolve(repo_root: Path, rel_path: str) -> Path:
     """
-    Resolve *rel_path* against *repo_root* and ensure the result
-    does not escape the repository root (prevents directory traversal).
+    Resolve ``rel_path`` against ``repo_root`` and ensure the result
+    does **not** escape the repository root (prevents directory traversal).
     """
     target = (repo_root / rel_path).resolve()
     if not str(target).startswith(str(repo_root)):
@@ -28,17 +44,44 @@ def _safe_resolve(repo_root: pathlib.Path, rel_path: str) -> pathlib.Path:
     return target
 
 
-def create_file(path: str, content: str) -> str:
+# --------------------------------------------------------------------------- #
+#  The actual tool implementation
+# --------------------------------------------------------------------------- #
+
+def _create_file(path: str, content: str) -> str:
     """
-    Create a new file at *path* (relative to the repo root) with the supplied
-    *content*.  Returns a JSON string containing either a `result` or an
-    `error` key.
+    Create a new file at ``path`` (relative to the repository root)
+    with the supplied ``content``.
+
+    Parameters
+    ----------
+    path
+        File path relative to the repo root.  ``path`` may contain
+        directory separators but **must not** escape the root.
+    content
+        Raw text to write into the file.
+
+    Returns
+    -------
+    str
+        JSON string.  On success:
+
+        .. code-block:: json
+
+            { "result": "File created: <path>" }
+
+        On failure:
+
+        .. code-block:: json
+
+            { "error": "<exception message>" }
     """
     try:
-        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        # ``app/tools`` → ``app`` → repo root
+        repo_root = Path(__file__).resolve().parents[2]
         target = _safe_resolve(repo_root, path)
 
-        # Make sure the parent directory exists
+        # Ensure the parent directory exists
         target.parent.mkdir(parents=True, exist_ok=True)
 
         # Write the file
@@ -46,9 +89,24 @@ def create_file(path: str, content: str) -> str:
 
         return json.dumps({"result": f"File created: {path}"})
     except Exception as exc:
+        # Any exception is surfaced as an error JSON
         return json.dumps({"error": str(exc)})
 
+
 # --------------------------------------------------------------------------- #
-#  Export the tool as part of the public API
+#  Public attributes for auto‑discovery
 # --------------------------------------------------------------------------- #
-__all__ = ["create_file"]
+
+# ``tools/__init__`` expects the module to expose a ``func`` attribute.
+func = _create_file
+
+# Optional, but helpful for humans and for the OpenAI schema
+name = "create_file"
+description = (
+    "Create a new file under the repository root.  Returns a JSON string "
+    "with either a `result` key on success or an `error` key on failure."
+)
+
+# The module's ``__all__`` is intentionally tiny – we only export what
+# is needed for the tool discovery logic.
+__all__ = ["func", "name", "description"]

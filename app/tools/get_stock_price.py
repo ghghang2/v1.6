@@ -1,18 +1,30 @@
 # app/tools/get_stock_price.py
-"""
-Tool that returns a mock stock price.
+"""Utility tool that returns a mock stock price.
 
-The function simulates a price lookup for a given ticker.  It is used
-by the Streamlit UI to demonstrate the function‑calling API.  The
-implementation is intentionally simple – a hard‑coded dictionary of
-sample prices – but the interface mirrors a real API call.
+This module is discovered by :mod:`app.tools.__init__`.  The discovery
+mechanism looks for a ``func`` attribute (or the first callable) and
+uses the optional ``name`` and ``description`` attributes to build the
+OpenAI function‑calling schema.  The public API therefore consists of
+
+* ``func`` – the callable that implements the tool.
+* ``name`` – the name the model will use to refer to the tool.
+* ``description`` – a short human‑readable description.
+
+The function returns a **JSON string**.  On success the JSON contains a
+``ticker`` and ``price`` key; on failure it contains an ``error`` key.
+This format matches the expectations of the OpenAI function‑calling
+workflow used in :mod:`app.chat`.
 """
+
+from __future__ import annotations
 
 import json
 from typing import Dict
 
-# Hard‑coded sample data – in a real system this would query a
-# finance API such as Yahoo Finance or Alpha Vantage.
+# ---------------------------------------------------------------------------
+#  Data & helpers
+# ---------------------------------------------------------------------------
+# Sample data – in a real world tool this would call a finance API.
 _SAMPLE_PRICES: Dict[str, float] = {
     "AAPL": 170.23,
     "GOOGL": 2819.35,
@@ -21,8 +33,11 @@ _SAMPLE_PRICES: Dict[str, float] = {
     "NVDA": 568.42,
 }
 
+# ---------------------------------------------------------------------------
+#  The tool implementation
+# ---------------------------------------------------------------------------
 
-def get_stock_price(ticker: str) -> str:
+def _get_stock_price(ticker: str) -> str:
     """Return the current stock price for *ticker*.
 
     Parameters
@@ -41,6 +56,12 @@ def get_stock_price(ticker: str) -> str:
     return json.dumps(result)
 
 # ---------------------------------------------------------------------------
-#  Export the tool as part of the public API
+#  Public attributes for auto‑discovery
 # ---------------------------------------------------------------------------
-__all__ = ["get_stock_price"]
+# ``tools/__init__`` expects the module to expose a ``func`` attribute.
+func = _get_stock_price
+name = "get_stock_price"
+description = "Return the current price for a given stock ticker."
+
+# Keep the public surface minimal.
+__all__ = ["func", "name", "description"]

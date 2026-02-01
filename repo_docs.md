@@ -9,6 +9,249 @@ Convenient import hub for the app package.
 __all__ = ["client", "config", "docs_extractor", "utils", "remote"]
 ```
 
+## app/chat.py
+
+```python
+# app/chat.py
+"""Utilities that handle the chat logic.
+
+The original implementation of the chat handling lived directly in
+``app.py``.  Extracting the functions into this dedicated module keeps
+the UI entry point small and makes the chat logic easier to unit‑test.
+
+Functions
+---------
+* :func:`build_messages` – convert a conversation history into the
+  list of messages expected by the OpenAI chat completion endpoint.
+* :func:`stream_and_collect` – stream the assistant response while
+  capturing any tool calls.
+* :func:`process_tool_calls` – invoke the tools requested by the model
+  and generate subsequent assistant turns.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, List, Tuple, Optional
+
+import streamlit as st
+
+from .config import MODEL_NAME
+from .tools import TOOLS
+
+# ---------------------------------------------------------------------------
+#  Public helper functions
+# ---------------------------------------------------------------------------
+
+def build_messages(
+    history: List[Tuple[str, str]],
+    system_prompt: str,
+    repo_docs: Optional[str],
+    user_input: Optional[str] = None,
+) -> List[Dict[str, Any]]:
+    """Return the list of messages to send to the chat model.
+
+    Parameters
+    ----------
+    history
+        List of ``(user, assistant)`` pairs that have already happened.
+    system_prompt
+        The system message that sets the model behaviour.
+    repo_docs
+        Optional Markdown string that contains the extracted repo source.
+    user_input
+        The new user message that will trigger the assistant reply.
+    """
+    msgs: List[Dict[str, Any]] = [{"role": "system", "content": str(system_prompt)}]
+    if repo_docs:
+        msgs.append({"role": "assistant", "content": str(repo_docs)})
+
+    for u, a in history:
+        msgs.append({"role": "user", "content": str(u)})
+        msgs.append({"role": "assistant", "content": str(a)})
+
+    if user_input is not None:
+        msgs.append({"role": "user", "content": str(user_input)})
+
+    return msgs
+
+
+def stream_and_collect(
+    client: Any,
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    placeholder: st.delta_generator.delta_generator,
+) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
+    """Stream the assistant response while capturing tool calls.
+
+    The function writes the incremental assistant content to the supplied
+    Streamlit ``placeholder`` and returns a tuple of the complete
+    assistant text and a list of tool calls (or ``None`` if no tool call
+    was emitted).
+    """
+    stream = client.chat.completions.create(
+        model=MODEL_NAME,
+        messages=messages,
+        stream=True,
+        tools=tools,
+    )
+
+    full_resp = ""
+    tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
+
+    for chunk in stream:
+        delta = chunk.choices[0].delta
+
+        # Regular text
+        if delta.content:
+            full_resp += delta.content
+            placeholder.markdown(full_resp, unsafe_allow_html=True)
+
+        # Tool calls – accumulate arguments per call id.
+        if delta.tool_calls:
+            for tc_delta in delta.tool_calls:
+                idx = tc_delta.index
+                if idx not in tool_calls_buffer:
+                    tool_calls_buffer[idx] = {
+                        "id": tc_delta.id,
+                        "name": tc_delta.function.name,
+                        "arguments": "",
+                    }
+                if tc_delta.function.arguments:
+                    tool_calls_buffer[idx]["arguments"] += tc_delta.function.arguments
+
+    final_tool_calls = list(tool_calls_buffer.values()) if tool_calls_buffer else None
+    return full_resp, final_tool_calls
+
+
+def process_tool_calls(
+    client: Any,
+    messages: List[Dict[str, Any]],
+    tools: List[Dict[str, Any]],
+    placeholder: st.delta_generator.delta_generator,
+    tool_calls: Optional[List[Dict[str, Any]]],
+) -> Tuple[str, Optional[List[Dict[str, Any]]]]:
+    """
+    Execute each tool that the model requested and keep asking the model
+    for further replies until it stops calling tools.
+
+    Parameters
+    ----------
+    client
+        The OpenAI client used to stream assistant replies.
+    messages
+        The conversation history that will be extended with the tool‑call
+        messages and the tool replies.
+    tools
+        The list of OpenAI‑compatible tool definitions that will be passed
+        to the ``chat.completions.create`` call.
+    placeholder
+        Streamlit placeholder that will receive the intermediate
+        assistant output.
+    tool_calls
+        The list of tool‑call objects produced by
+        :func:`stream_and_collect`.  The function may return a new
+        list of calls that the model wants to make after the tool
+        result is sent back.
+
+    Returns
+    -------
+    tuple
+        ``(full_text, remaining_tool_calls)``.  *full_text* contains
+        the cumulative assistant reply **including** the text produced
+        by the tool calls.  *remaining_tool_calls* is ``None`` when the
+        model finished asking for tools; otherwise it is the list of calls
+        that still need to be handled.
+    """
+    if not tool_calls:
+        return "", None
+
+    # Accumulate all text that the assistant will eventually produce
+    full_text = ""
+
+    # We keep looping until the model stops asking for tools
+    while tool_calls:
+        # Process each tool call in the current batch
+        for tc in tool_calls:
+            # ---- 1️⃣  Parse arguments safely --------------------------------
+            try:
+                args = json.loads(tc.get("arguments") or "{}")
+            except Exception as exc:
+                args = {}
+                result = f"❌  JSON error: {exc}"
+            else:
+                # ---- 2️⃣  Find the actual Python function --------------------
+                func = next(
+                    (t.func for t in TOOLS if t.name == tc.get("name")), None
+                )
+
+                if func:
+                    try:
+                        result = func(**args)
+                    except Exception as exc:  # pragma: no cover
+                        result = f"❌  Tool error: {exc}"
+                else:
+                    result = f"⚠️  Unknown tool '{tc.get('name')}'"
+
+            # ---- 3️⃣  Render the tool‑call result ---------------------------
+            # tool_output_str = (
+            #     f"**Tool call**: `{tc.get('name')}`"
+            #     f"({', '.join(f'{k}={v}' for k, v in args.items())}) → `{result[:20]}`"
+            # )
+            # placeholder.markdown(tool_output_str, unsafe_allow_html=True)
+            preview = result[:80] + ("…" if len(result) > 80 else "")
+            placeholder.markdown(
+                f"<details>"
+                f"<summary>**{tc.get('name')}**: `{json.dumps(args)}`</summary>"
+                f"\n\n**Result preview**: `{preview}`\n\n"
+                # f"```json\n{result}\n```"
+                f"</details>",
+                unsafe_allow_html=True,
+            )
+
+            # ---- 4️⃣  Build messages for the next assistant turn ----------
+            messages.append(
+                {
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": [
+                        {
+                            "id": tc.get("id"),
+                            "type": "function",
+                            "function": {
+                                "name": tc.get("name"),
+                                "arguments": tc.get("arguments") or "{}",
+                            },
+                        }
+                    ],
+                }
+            )
+            messages.append(
+                {
+                    "role": "tool",
+                    "tool_call_id": str(tc.get("id") or ""),
+                    "content": result,
+                }
+            )
+
+            # Append the tool result to the cumulative text
+            full_text += result
+
+        # ---- 5️⃣  Ask the model for the next assistant reply -------------
+        # Each round gets a fresh placeholder so the UI shows the new output
+        new_placeholder = st.empty()
+        new_text, new_tool_calls = stream_and_collect(
+            client, messages, tools, new_placeholder
+        )
+        full_text += new_text
+
+        # Prepare for the next iteration
+        tool_calls = new_tool_calls or None
+
+    # All tool calls have been handled
+    return full_text, None
+```
+
 ## app/client.py
 
 ```python
@@ -320,134 +563,105 @@ class RemoteClient:
 
 ```python
 # app/tools/__init__.py
-"""Tool registry for the Streamlit + OpenAI integration.
-
-This package contains one module per tool.  The :class:`Tool` data
-class defines the public API that the OpenAI chat completions endpoint
-expects.  ``TOOLS`` is a list of all available tools and
-``get_tools()`` returns the OpenAI‑ready format.
-
-When new tools are added, simply create a new file in this package and
-append a :class:`Tool` instance to the ``TOOLS`` list.
-"""
+# --------------------
+# Automatically discovers any *.py file in this package that defines
+# a callable (either via a `func` attribute or the first callable
+# in the module).  It generates a minimal JSON‑schema from the
+# function’s signature and exposes a list of :class:`Tool` objects
+# as well as :func:`get_tools()` for the OpenAI API.
 
 from __future__ import annotations
 
-import json
+import inspect
+import pkgutil
+import importlib
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List
 
-# Import tool implementations (they live in separate modules)
-from .get_stock_price import get_stock_price as _get_stock_price
-from .create_file import create_file as _create_file
-from .run_command import run_command as _run_command
+# ----- Schema generator -------------------------------------------------
+def _generate_schema(func: Callable) -> Dict[str, Any]:
+    sig = inspect.signature(func)
+    properties: Dict[str, Dict[str, str]] = {}
+    required: List[str] = []
+    for name, param in sig.parameters.items():
+        ann = param.annotation
+        if ann is inspect._empty:
+            ann_type = "string"
+        elif ann in (int, float, complex):
+            ann_type = "number"
+        else:
+            ann_type = "string"
+        properties[name] = {"type": ann_type}
+        if param.default is inspect._empty:
+            required.append(name)
+    return {
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        }
+    }
 
-# --------------------------------------------------------------------------- #
-#  Tool dataclass
-# --------------------------------------------------------------------------- #
+# ----- Tool dataclass ---------------------------------------------------
 @dataclass
 class Tool:
-    """Represents a tool that can be called by the OpenAI model."""
-
     name: str
     description: str
     func: Callable
-    schema: Dict[str, Any] = field(init=False)
+    schema: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Define the JSON schema for each supported tool.
-        if self.name == "get_stock_price":
-            self.schema = {
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ticker": {
-                            "type": "string",
-                            "description": "Stock symbol, e.g. AAPL",
-                        },
-                    },
-                    "required": ["ticker"],
-                }
-            }
-        elif self.name == "create_file":
-            self.schema = {
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Relative path of the new file (e.g. 'app/new_module.py')",
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "File contents as a plain string.",
-                        },
-                    },
-                    "required": ["path", "content"],
-                }
-            }
-        elif self.name == "run_command":
-            self.schema = {
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to execute, e.g. 'pytest -q'.",
-                        },
-                    },
-                    "required": ["command"],
-                }
-            }
-        else:
-            raise NotImplementedError(f"Schema for {self.name} not defined")
+        if not self.schema:
+            self.schema = _generate_schema(self.func)
 
-# --------------------------------------------------------------------------- #
-#  Tool registry
-# --------------------------------------------------------------------------- #
-TOOLS: List[Tool] = [
-    Tool(
-        name="get_stock_price",
-        description="Get the current stock price for a ticker",
-        func=_get_stock_price,
-    ),
-    Tool(
-        name="create_file",
-        description="Create a new file at the given path with the supplied content",
-        func=_create_file,
-    ),
-    Tool(
-        name="run_command",
-        description="Execute a shell command and return its output, return code and stderr",
-        func=_run_command,
-    ),
-]
+# ----- Automatic discovery ----------------------------------------------
+TOOLS: List[Tool] = []
 
-# --------------------------------------------------------------------------- #
-#  Helper – expose OpenAI‑ready tool list
-# --------------------------------------------------------------------------- #
+package_path = Path(__file__).parent
+for _, module_name, is_pkg in pkgutil.iter_modules([str(package_path)]):
+    if is_pkg or module_name == "__init__":
+        continue
+    try:
+        module = importlib.import_module(f".{module_name}", package=__name__)
+    except Exception:
+        continue
+
+    func: Callable | None = getattr(module, "func", None)
+    if func is None:
+        # Fallback: first callable in the module
+        for attr in module.__dict__.values():
+            if callable(attr):
+                func = attr
+                break
+    if not callable(func):
+        continue
+
+    name: str = getattr(module, "name", func.__name__)
+    description: str = getattr(module, "description", func.__doc__ or "")
+    schema: Dict[str, Any] = getattr(module, "schema", _generate_schema(func))
+
+    TOOLS.append(Tool(name=name, description=description, func=func, schema=schema))
+
+# ----- OpenAI helper ----------------------------------------------------
 def get_tools() -> List[Dict]:
-    """Return the list of tools formatted for the OpenAI API."""
-    api_tools: List[Dict] = []
-    for t in TOOLS:
-        api_tools.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.schema["parameters"],
-                },
-            }
-        )
-    return api_tools
+    """Return the list of tools formatted for chat.completions.create."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.schema.get("parameters", {}),
+            },
+        }
+        for t in TOOLS
+    ]
 
-# --------------------------------------------------------------------------- #
-#  Convenience for quick introspection in the REPL
-# --------------------------------------------------------------------------- #
+# ----- Debug ------------------------------------------------------------
 if __name__ == "__main__":
-    print(json.dumps(get_tools(), indent=2))
-
+    import json
+    print(json.dumps([t.__dict__ for t in TOOLS], indent=2))
 ```
 
 ## app/tools/create_file.py
@@ -457,25 +671,41 @@ if __name__ == "__main__":
 """
 Tool that creates a new file under the repository root.
 
-The function validates the target path so that it cannot escape the
-repository root (prevents directory traversal).  It creates any missing
-parent directories, writes the supplied content, and returns a JSON
-string containing either a `result` key (success) or an `error` key
-(failure).
+This module exposes a **single callable** named ``func`` – the
+``tools/__init__`` loader looks for that attribute (or falls back to the
+first callable in the module).  The module also supplies ``name`` and
+``description`` attributes so that the tool can be discovered
+automatically and the OpenAI function‑calling schema can be built.
 
-The JSON format is compatible with the OpenAI function‑calling schema
-used by the chat UI.
+The public API of this module is intentionally tiny:
+* ``func`` – the function that implements the tool
+* ``name`` – the name the model will use to refer to the tool
+* ``description`` – a short human‑readable description
+
+The function returns a **JSON string**.  On success it contains a
+``result`` key; on failure it contains an ``error`` key.  The format
+matches the expectations of the OpenAI function‑calling workflow
+present in :mod:`app.chat`.
+
+The module is deliberately free of side‑effects and does not depend
+on any external configuration – it only needs the repository root,
+which is derived from the location of this file.
 """
 
+from __future__ import annotations
+
 import json
-import pathlib
+from pathlib import Path
 from typing import Dict
 
+# --------------------------------------------------------------------------- #
+#  Helpers
+# --------------------------------------------------------------------------- #
 
-def _safe_resolve(repo_root: pathlib.Path, rel_path: str) -> pathlib.Path:
+def _safe_resolve(repo_root: Path, rel_path: str) -> Path:
     """
-    Resolve *rel_path* against *repo_root* and ensure the result
-    does not escape the repository root (prevents directory traversal).
+    Resolve ``rel_path`` against ``repo_root`` and ensure the result
+    does **not** escape the repository root (prevents directory traversal).
     """
     target = (repo_root / rel_path).resolve()
     if not str(target).startswith(str(repo_root)):
@@ -483,17 +713,44 @@ def _safe_resolve(repo_root: pathlib.Path, rel_path: str) -> pathlib.Path:
     return target
 
 
-def create_file(path: str, content: str) -> str:
+# --------------------------------------------------------------------------- #
+#  The actual tool implementation
+# --------------------------------------------------------------------------- #
+
+def _create_file(path: str, content: str) -> str:
     """
-    Create a new file at *path* (relative to the repo root) with the supplied
-    *content*.  Returns a JSON string containing either a `result` or an
-    `error` key.
+    Create a new file at ``path`` (relative to the repository root)
+    with the supplied ``content``.
+
+    Parameters
+    ----------
+    path
+        File path relative to the repo root.  ``path`` may contain
+        directory separators but **must not** escape the root.
+    content
+        Raw text to write into the file.
+
+    Returns
+    -------
+    str
+        JSON string.  On success:
+
+        .. code-block:: json
+
+            { "result": "File created: <path>" }
+
+        On failure:
+
+        .. code-block:: json
+
+            { "error": "<exception message>" }
     """
     try:
-        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        # ``app/tools`` → ``app`` → repo root
+        repo_root = Path(__file__).resolve().parents[2]
         target = _safe_resolve(repo_root, path)
 
-        # Make sure the parent directory exists
+        # Ensure the parent directory exists
         target.parent.mkdir(parents=True, exist_ok=True)
 
         # Write the file
@@ -501,33 +758,59 @@ def create_file(path: str, content: str) -> str:
 
         return json.dumps({"result": f"File created: {path}"})
     except Exception as exc:
+        # Any exception is surfaced as an error JSON
         return json.dumps({"error": str(exc)})
 
-# --------------------------------------------------------------------------- #
-#  Export the tool as part of the public API
-# --------------------------------------------------------------------------- #
-__all__ = ["create_file"]
 
+# --------------------------------------------------------------------------- #
+#  Public attributes for auto‑discovery
+# --------------------------------------------------------------------------- #
+
+# ``tools/__init__`` expects the module to expose a ``func`` attribute.
+func = _create_file
+
+# Optional, but helpful for humans and for the OpenAI schema
+name = "create_file"
+description = (
+    "Create a new file under the repository root.  Returns a JSON string "
+    "with either a `result` key on success or an `error` key on failure."
+)
+
+# The module's ``__all__`` is intentionally tiny – we only export what
+# is needed for the tool discovery logic.
+__all__ = ["func", "name", "description"]
 ```
 
 ## app/tools/get_stock_price.py
 
 ```python
 # app/tools/get_stock_price.py
-"""
-Tool that returns a mock stock price.
+"""Utility tool that returns a mock stock price.
 
-The function simulates a price lookup for a given ticker.  It is used
-by the Streamlit UI to demonstrate the function‑calling API.  The
-implementation is intentionally simple – a hard‑coded dictionary of
-sample prices – but the interface mirrors a real API call.
+This module is discovered by :mod:`app.tools.__init__`.  The discovery
+mechanism looks for a ``func`` attribute (or the first callable) and
+uses the optional ``name`` and ``description`` attributes to build the
+OpenAI function‑calling schema.  The public API therefore consists of
+
+* ``func`` – the callable that implements the tool.
+* ``name`` – the name the model will use to refer to the tool.
+* ``description`` – a short human‑readable description.
+
+The function returns a **JSON string**.  On success the JSON contains a
+``ticker`` and ``price`` key; on failure it contains an ``error`` key.
+This format matches the expectations of the OpenAI function‑calling
+workflow used in :mod:`app.chat`.
 """
+
+from __future__ import annotations
 
 import json
 from typing import Dict
 
-# Hard‑coded sample data – in a real system this would query a
-# finance API such as Yahoo Finance or Alpha Vantage.
+# ---------------------------------------------------------------------------
+#  Data & helpers
+# ---------------------------------------------------------------------------
+# Sample data – in a real world tool this would call a finance API.
 _SAMPLE_PRICES: Dict[str, float] = {
     "AAPL": 170.23,
     "GOOGL": 2819.35,
@@ -536,8 +819,11 @@ _SAMPLE_PRICES: Dict[str, float] = {
     "NVDA": 568.42,
 }
 
+# ---------------------------------------------------------------------------
+#  The tool implementation
+# ---------------------------------------------------------------------------
 
-def get_stock_price(ticker: str) -> str:
+def _get_stock_price(ticker: str) -> str:
     """Return the current stock price for *ticker*.
 
     Parameters
@@ -556,10 +842,75 @@ def get_stock_price(ticker: str) -> str:
     return json.dumps(result)
 
 # ---------------------------------------------------------------------------
-#  Export the tool as part of the public API
+#  Public attributes for auto‑discovery
 # ---------------------------------------------------------------------------
-__all__ = ["get_stock_price"]
+# ``tools/__init__`` expects the module to expose a ``func`` attribute.
+func = _get_stock_price
+name = "get_stock_price"
+description = "Return the current price for a given stock ticker."
 
+# Keep the public surface minimal.
+__all__ = ["func", "name", "description"]
+
+```
+
+## app/tools/get_weather.py
+
+```python
+# app/tools/weather.py
+"""
+Get the current weather for a city using the public wttr.in service.
+
+No API key or external dependencies are required – the tool uses the
+built‑in urllib module, which ships with every Python installation.
+"""
+
+import json
+import urllib.request
+from typing import Dict
+
+def _get_weather(city: str) -> str:
+    """
+    Return a short weather description for *city*.
+
+    Parameters
+    ----------
+    city : str
+        The name of the city to query (e.g. "Taipei").
+
+    Returns
+    -------
+    str
+        JSON string. On success:
+
+            {"city":"Taipei","weather":"☀️  +61°F"}
+
+        On error:
+
+            {"error":"<error message>"}
+    """
+    try:
+        # wttr.in gives a plain‑text summary; we ask for the
+        # “format=1” variant which is a single line.
+        url = f"https://wttr.in/{urllib.parse.quote_plus(city)}?format=1"
+        with urllib.request.urlopen(url, timeout=10) as resp:
+            body = resp.read().decode().strip()
+
+        # The response is already a nice one‑line string
+        result: Dict[str, str] = {"city": city, "weather": body}
+        return json.dumps(result)
+    except Exception as exc:      # pragma: no cover
+        return json.dumps({"error": str(exc)})
+
+# Public attributes used by the tool loader
+func = _get_weather
+name = "get_weather"
+description = (
+    "Return a concise, human‑readable weather summary for a city using wttr.in. "
+    "No API key or external packages are required."
+)
+
+__all__ = ["func", "name", "description"]
 ```
 
 ## app/tools/run_command.py
@@ -569,43 +920,64 @@ __all__ = ["get_stock_price"]
 """
 Tool that executes a shell command and returns its output.
 
-The tool is safe for the repository root – it does not allow changing
-directories or writing files outside the repo.  The command is run
-through a subprocess with `shell=True` so that the user can use shell
-syntax (e.g. pipes, redirection).  The tool captures stdout, stderr and
-the exit code, and returns a JSON string that the model can consume.
+This module exposes a **single callable** named ``func`` – the
+``tools/__init__`` loader looks for that attribute (or falls back to the
+first callable in the module).  The module also supplies ``name`` and
+``description`` attributes so that the tool can be discovered
+automatically and the OpenAI function‑calling schema can be built.
 
-The function is intentionally minimal to avoid accidental side‑effects.
+The public API of this module is intentionally tiny:
+* ``func`` – the function that implements the tool
+* ``name`` – the name the model will use to refer to the tool
+* ``description`` – a short human‑readable description
+
+The function returns a **JSON string**.  On success it contains a
+``stdout``, ``stderr`` and ``exit_code`` key; on failure it contains an
+``error`` key.  The format matches the expectations of the OpenAI
+function‑calling workflow present in :mod:`app.chat`.
+
+The module is deliberately free of side‑effects and does not depend
+on any external configuration – it only needs the repository root,
+which is derived from the location of this file.
 """
+
+from __future__ import annotations
 
 import json
 import subprocess
-import pathlib
+from pathlib import Path
 from typing import Dict
 
+# ---------------------------------------------------------------------------
+#  Helpers
+# ---------------------------------------------------------------------------
 
-def _safe_resolve(repo_root: pathlib.Path, rel_path: str) -> pathlib.Path:
+def _safe_resolve(repo_root: Path, rel_path: str) -> Path:
     """
-    Resolve *rel_path* against *repo_root* and ensure the result
-    does not escape the repository root (prevents directory traversal).
+    Resolve ``rel_path`` against ``repo_root`` and ensure the result
+    does **not** escape the repository root (prevents directory traversal).
     """
     target = (repo_root / rel_path).resolve()
     if not str(target).startswith(str(repo_root)):
         raise ValueError("Path escapes repository root")
     return target
 
+# ---------------------------------------------------------------------------
+#  The actual tool implementation
+# ---------------------------------------------------------------------------
 
-def run_command(command: str, cwd: str | None = None) -> str:
+def _run_command(command: str, cwd: str | None = None) -> str:
     """
-    Execute *command* in the repository root (or a sub‑directory if
-    *cwd* is provided) and return a JSON string with:
-        * stdout
-        * stderr
-        * exit_code
+    Execute ``command`` in the repository root (or a sub‑directory if
+    ``cwd`` is provided) and return a JSON string with:
+        * ``stdout``
+        * ``stderr``
+        * ``exit_code``
     Any exception is converted to an error JSON.
     """
     try:
-        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        # ``app/tools`` → ``app`` → repo root
+        repo_root = Path(__file__).resolve().parents[2]
         if cwd:
             target_dir = _safe_resolve(repo_root, cwd)
         else:
@@ -630,10 +1002,21 @@ def run_command(command: str, cwd: str | None = None) -> str:
         # Return a JSON with an error key
         return json.dumps({"error": str(exc)})
 
-# --------------------------------------------------------------------------- #
-#  Export the tool as part of the public API
-# --------------------------------------------------------------------------- #
-__all__ = ["run_command"]
+# ---------------------------------------------------------------------------
+#  Public attributes for auto‑discovery
+# ---------------------------------------------------------------------------
+# ``tools/__init__`` expects the module to expose a ``func`` attribute.
+func = _run_command
+
+# Optional, but helpful for humans and for the OpenAI schema
+name = "run_command"
+description = (
+    "Execute a shell command within the repository root (or a sub‑directory) and return the stdout, stderr and exit code.  Returns a JSON string with either the result keys or an ``error`` key on failure."
+)
+
+# The module's ``__all__`` is intentionally tiny – we only export what
+# is needed for the tool discovery logic.
+__all__ = ["func", "name", "description"]
 
 ```
 
@@ -725,6 +1108,7 @@ from app.config import DEFAULT_SYSTEM_PROMPT
 from app.client import get_client
 from app.tools import get_tools, TOOLS
 from app.docs_extractor import extract
+from app.chat import build_messages, stream_and_collect, process_tool_calls
 
 
 # --------------------------------------------------------------------------- #
@@ -764,142 +1148,6 @@ def is_repo_up_to_date(repo_path: Path) -> bool:
         repo.head.commit.hexsha == remote_branch.commit.hexsha
         and not repo.is_dirty(untracked_files=True)
     )
-
-
-def build_messages(
-    history,
-    system_prompt,
-    repo_docs,
-    user_input=None,
-):
-    """
-    Build the list of messages expected by the OpenAI chat API.
-    """
-    msgs = [{"role": "system", "content": str(system_prompt)}]
-    if repo_docs:
-        msgs.append({"role": "assistant", "content": str(repo_docs)})
-
-    for u, a in history:
-        msgs.append({"role": "user", "content": str(u)})
-        msgs.append({"role": "assistant", "content": str(a)})
-
-    if user_input is not None:
-        msgs.append({"role": "user", "content": str(user_input)})
-
-    return msgs
-
-
-def stream_and_collect(client, messages, tools, placeholder):
-    """
-    Stream a response from the model, updating `placeholder` live, and
-    collect any tool calls that are emitted.
-    """
-    stream = client.chat.completions.create(
-        model="unsloth/gpt-oss-20b-GGUF:F16",
-        messages=messages,
-        stream=True,
-        tools=tools,
-    )
-
-    full_resp = ""
-    tool_calls_buffer = {}
-
-    for chunk in stream:
-        delta = chunk.choices[0].delta
-
-        # Regular text
-        if delta.content:
-            full_resp += delta.content
-            placeholder.markdown(full_resp, unsafe_allow_html=True)
-
-        # Tool calls
-        if delta.tool_calls:
-            for tc_delta in delta.tool_calls:
-                idx = tc_delta.index
-                if idx not in tool_calls_buffer:
-                    tool_calls_buffer[idx] = {
-                        "id": tc_delta.id,
-                        "name": tc_delta.function.name,
-                        "arguments": "",
-                    }
-                if tc_delta.function.arguments:
-                    tool_calls_buffer[idx]["arguments"] += tc_delta.function.arguments
-
-    final_tool_calls = list(tool_calls_buffer.values()) if tool_calls_buffer else None
-    return full_resp, final_tool_calls
-
-
-def process_tool_calls(client, messages, tools, placeholder, tool_calls):
-    """
-    For every tool call in `tool_calls`:
-        • call the tool
-        • append assistant_tool_call_msg + tool_msg to `messages`
-        • stream a new assistant reply
-    Return the final assistant text and the next list of tool calls.
-    """
-    if not tool_calls:
-        return "", None
-
-    full_text = ""
-    for tc in tool_calls:
-        args = json.loads(tc.get("arguments") or "{}")
-        func = next((t.func for t in TOOLS if t.name == tc.get("name")), None)
-
-        if func:
-            try:
-                result = func(**args)
-            except Exception as exc:
-                result = f"❌  Tool error: {exc}"
-        else:
-            result = f"⚠️  Unknown tool '{tc.get('name')}'"
-
-        # --------------------------------------------------------------------
-        #  Render the tool‑call *result* in the UI before the next assistant turn
-        # --------------------------------------------------------------------
-        tool_output_str = (
-            f"**Tool call**: `{tc.get('name')}`"
-            f"({', '.join(f'{k}={v}' for k, v in args.items())}) → `{result}`"
-        )
-        placeholder.markdown(tool_output_str, unsafe_allow_html=True)
-
-        # Build messages to send back to the model
-        assistant_tool_call_msg = {
-            "role": "assistant",
-            "content": None,
-            "tool_calls": [
-                {
-                    "id": tc.get("id"),
-                    "type": "function",
-                    "function": {
-                        "name": tc.get("name"),
-                        "arguments": tc.get("arguments") or "{}",
-                    },
-                }
-            ],
-        }
-
-        tool_msg = {
-            "role": "tool",
-            "tool_call_id": str(tc.get("id") or ""),
-            "content": str(result or ""),
-        }
-
-        messages.append(assistant_tool_call_msg)
-        messages.append(tool_msg)
-
-        # Stream the next assistant reply – each iteration gets a fresh placeholder
-        placeholder2 = st.empty()
-        new_text, new_tool_calls = stream_and_collect(
-            client, messages, tools, placeholder2
-        )
-        full_text += new_text
-        tool_calls = new_tool_calls or []
-
-        if not tool_calls:  # no more calls – break early
-            break
-
-    return full_text, tool_calls
-
 
 # --------------------------------------------------------------------------- #
 #  Streamlit UI
@@ -1343,90 +1591,5 @@ if __name__ == "__main__":
             sys.exit(1)
     else:
         main()
-```
-
-## tests/__init__.py
-
-```python
-# tests/__init__.py
-"""
-Make the repository root importable during test collection.
-"""
-
-import pathlib
-import sys
-
-# Path to the repository root (the directory that contains `app/`).
-ROOT_DIR = pathlib.Path(__file__).resolve().parent.parent
-
-# Ensure the root is first in sys.path.
-if str(ROOT_DIR) not in sys.path:
-    sys.path.insert(0, str(ROOT_DIR))
-
-```
-
-## tests/test_create_file_tool.py
-
-```python
-import json
-import os
-import pathlib
-
-import pytest
-
-# Import the tool directly from the package
-from app.tools import create_file
-
-@pytest.fixture
-def unique_filename(tmp_path):
-    """
-    Return a unique file name that lives under the repository root.
-    The file is removed after the test finishes.
-    """
-    fname = f"tests/tmp_{tmp_path.name}.py"
-    yield fname
-    # cleanup – the test itself creates/deletes the file, so nothing is required here
-
-
-def test_create_file_creates_file_and_returns_result(unique_filename):
-    """
-    Verify that the ``create_file`` tool:
-    * writes the given content to the correct path (relative to the repo root)
-    * returns a JSON object containing the key ``result``.
-    """
-    content = "print('hello world')"
-
-    # Call the tool
-    result_json = create_file(unique_filename, content)
-
-    # Parse the JSON result
-    result = json.loads(result_json)
-    assert "result" in result, "Expected a ``result`` key in the JSON response"
-
-    # Verify the file was created with the exact content
-    assert pathlib.Path(unique_filename).exists(), "The file was not created"
-    with open(unique_filename, encoding="utf-8") as f:
-        assert f.read() == content, "File contents do not match the supplied content"
-
-    # Clean up the file so it doesn't affect other tests
-    os.remove(unique_filename)
-
-
-def test_create_file_prevents_directory_traversal():
-    """
-    The tool must reject attempts to write outside the repository root.
-    It should return a JSON object containing an ``error`` key.
-    """
-    # Path that tries to escape the repo root
-    bad_path = "../../outside.txt"
-    content = "secret"
-
-    result_json = create_file(bad_path, content)
-    result = json.loads(result_json)
-
-    assert "error" in result, "Expected an ``error`` key for a path traversal attempt"
-    # Ensure the file was not created
-    assert not pathlib.Path(bad_path).exists(), "File was created outside the repo root"
-
 ```
 

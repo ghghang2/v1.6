@@ -2,43 +2,64 @@
 """
 Tool that executes a shell command and returns its output.
 
-The tool is safe for the repository root – it does not allow changing
-directories or writing files outside the repo.  The command is run
-through a subprocess with `shell=True` so that the user can use shell
-syntax (e.g. pipes, redirection).  The tool captures stdout, stderr and
-the exit code, and returns a JSON string that the model can consume.
+This module exposes a **single callable** named ``func`` – the
+``tools/__init__`` loader looks for that attribute (or falls back to the
+first callable in the module).  The module also supplies ``name`` and
+``description`` attributes so that the tool can be discovered
+automatically and the OpenAI function‑calling schema can be built.
 
-The function is intentionally minimal to avoid accidental side‑effects.
+The public API of this module is intentionally tiny:
+* ``func`` – the function that implements the tool
+* ``name`` – the name the model will use to refer to the tool
+* ``description`` – a short human‑readable description
+
+The function returns a **JSON string**.  On success it contains a
+``stdout``, ``stderr`` and ``exit_code`` key; on failure it contains an
+``error`` key.  The format matches the expectations of the OpenAI
+function‑calling workflow present in :mod:`app.chat`.
+
+The module is deliberately free of side‑effects and does not depend
+on any external configuration – it only needs the repository root,
+which is derived from the location of this file.
 """
+
+from __future__ import annotations
 
 import json
 import subprocess
-import pathlib
+from pathlib import Path
 from typing import Dict
 
+# ---------------------------------------------------------------------------
+#  Helpers
+# ---------------------------------------------------------------------------
 
-def _safe_resolve(repo_root: pathlib.Path, rel_path: str) -> pathlib.Path:
+def _safe_resolve(repo_root: Path, rel_path: str) -> Path:
     """
-    Resolve *rel_path* against *repo_root* and ensure the result
-    does not escape the repository root (prevents directory traversal).
+    Resolve ``rel_path`` against ``repo_root`` and ensure the result
+    does **not** escape the repository root (prevents directory traversal).
     """
     target = (repo_root / rel_path).resolve()
     if not str(target).startswith(str(repo_root)):
         raise ValueError("Path escapes repository root")
     return target
 
+# ---------------------------------------------------------------------------
+#  The actual tool implementation
+# ---------------------------------------------------------------------------
 
-def run_command(command: str, cwd: str | None = None) -> str:
+def _run_command(command: str, cwd: str | None = None) -> str:
     """
-    Execute *command* in the repository root (or a sub‑directory if
-    *cwd* is provided) and return a JSON string with:
-        * stdout
-        * stderr
-        * exit_code
+    Execute ``command`` in the repository root (or a sub‑directory if
+    ``cwd`` is provided) and return a JSON string with:
+        * ``stdout``
+        * ``stderr``
+        * ``exit_code``
     Any exception is converted to an error JSON.
     """
     try:
-        repo_root = pathlib.Path(__file__).resolve().parent.parent
+        # ``app/tools`` → ``app`` → repo root
+        repo_root = Path(__file__).resolve().parents[2]
         if cwd:
             target_dir = _safe_resolve(repo_root, cwd)
         else:
@@ -63,7 +84,18 @@ def run_command(command: str, cwd: str | None = None) -> str:
         # Return a JSON with an error key
         return json.dumps({"error": str(exc)})
 
-# --------------------------------------------------------------------------- #
-#  Export the tool as part of the public API
-# --------------------------------------------------------------------------- #
-__all__ = ["run_command"]
+# ---------------------------------------------------------------------------
+#  Public attributes for auto‑discovery
+# ---------------------------------------------------------------------------
+# ``tools/__init__`` expects the module to expose a ``func`` attribute.
+func = _run_command
+
+# Optional, but helpful for humans and for the OpenAI schema
+name = "run_command"
+description = (
+    "Execute a shell command within the repository root (or a sub‑directory) and return the stdout, stderr and exit code.  Returns a JSON string with either the result keys or an ``error`` key on failure."
+)
+
+# The module's ``__all__`` is intentionally tiny – we only export what
+# is needed for the tool discovery logic.
+__all__ = ["func", "name", "description"]

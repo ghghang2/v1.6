@@ -1,128 +1,100 @@
 # app/tools/__init__.py
-"""Tool registry for the Streamlit + OpenAI integration.
-
-This package contains one module per tool.  The :class:`Tool` data
-class defines the public API that the OpenAI chat completions endpoint
-expects.  ``TOOLS`` is a list of all available tools and
-``get_tools()`` returns the OpenAI‑ready format.
-
-When new tools are added, simply create a new file in this package and
-append a :class:`Tool` instance to the ``TOOLS`` list.
-"""
+# --------------------
+# Automatically discovers any *.py file in this package that defines
+# a callable (either via a `func` attribute or the first callable
+# in the module).  It generates a minimal JSON‑schema from the
+# function’s signature and exposes a list of :class:`Tool` objects
+# as well as :func:`get_tools()` for the OpenAI API.
 
 from __future__ import annotations
 
-import json
+import inspect
+import pkgutil
+import importlib
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Dict, List
 
-# Import tool implementations (they live in separate modules)
-from .get_stock_price import get_stock_price as _get_stock_price
-from .create_file import create_file as _create_file
-from .run_command import run_command as _run_command
+# ----- Schema generator -------------------------------------------------
+def _generate_schema(func: Callable) -> Dict[str, Any]:
+    sig = inspect.signature(func)
+    properties: Dict[str, Dict[str, str]] = {}
+    required: List[str] = []
+    for name, param in sig.parameters.items():
+        ann = param.annotation
+        if ann is inspect._empty:
+            ann_type = "string"
+        elif ann in (int, float, complex):
+            ann_type = "number"
+        else:
+            ann_type = "string"
+        properties[name] = {"type": ann_type}
+        if param.default is inspect._empty:
+            required.append(name)
+    return {
+        "parameters": {
+            "type": "object",
+            "properties": properties,
+            "required": required,
+        }
+    }
 
-# --------------------------------------------------------------------------- #
-#  Tool dataclass
-# --------------------------------------------------------------------------- #
+# ----- Tool dataclass ---------------------------------------------------
 @dataclass
 class Tool:
-    """Represents a tool that can be called by the OpenAI model."""
-
     name: str
     description: str
     func: Callable
-    schema: Dict[str, Any] = field(init=False)
+    schema: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Define the JSON schema for each supported tool.
-        if self.name == "get_stock_price":
-            self.schema = {
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ticker": {
-                            "type": "string",
-                            "description": "Stock symbol, e.g. AAPL",
-                        },
-                    },
-                    "required": ["ticker"],
-                }
-            }
-        elif self.name == "create_file":
-            self.schema = {
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "path": {
-                            "type": "string",
-                            "description": "Relative path of the new file (e.g. 'app/new_module.py')",
-                        },
-                        "content": {
-                            "type": "string",
-                            "description": "File contents as a plain string.",
-                        },
-                    },
-                    "required": ["path", "content"],
-                }
-            }
-        elif self.name == "run_command":
-            self.schema = {
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "command": {
-                            "type": "string",
-                            "description": "Shell command to execute, e.g. 'pytest -q'.",
-                        },
-                    },
-                    "required": ["command"],
-                }
-            }
-        else:
-            raise NotImplementedError(f"Schema for {self.name} not defined")
+        if not self.schema:
+            self.schema = _generate_schema(self.func)
 
-# --------------------------------------------------------------------------- #
-#  Tool registry
-# --------------------------------------------------------------------------- #
-TOOLS: List[Tool] = [
-    Tool(
-        name="get_stock_price",
-        description="Get the current stock price for a ticker",
-        func=_get_stock_price,
-    ),
-    Tool(
-        name="create_file",
-        description="Create a new file at the given path with the supplied content",
-        func=_create_file,
-    ),
-    Tool(
-        name="run_command",
-        description="Execute a shell command and return its output, return code and stderr",
-        func=_run_command,
-    ),
-]
+# ----- Automatic discovery ----------------------------------------------
+TOOLS: List[Tool] = []
 
-# --------------------------------------------------------------------------- #
-#  Helper – expose OpenAI‑ready tool list
-# --------------------------------------------------------------------------- #
+package_path = Path(__file__).parent
+for _, module_name, is_pkg in pkgutil.iter_modules([str(package_path)]):
+    if is_pkg or module_name == "__init__":
+        continue
+    try:
+        module = importlib.import_module(f".{module_name}", package=__name__)
+    except Exception:
+        continue
+
+    func: Callable | None = getattr(module, "func", None)
+    if func is None:
+        # Fallback: first callable in the module
+        for attr in module.__dict__.values():
+            if callable(attr):
+                func = attr
+                break
+    if not callable(func):
+        continue
+
+    name: str = getattr(module, "name", func.__name__)
+    description: str = getattr(module, "description", func.__doc__ or "")
+    schema: Dict[str, Any] = getattr(module, "schema", _generate_schema(func))
+
+    TOOLS.append(Tool(name=name, description=description, func=func, schema=schema))
+
+# ----- OpenAI helper ----------------------------------------------------
 def get_tools() -> List[Dict]:
-    """Return the list of tools formatted for the OpenAI API."""
-    api_tools: List[Dict] = []
-    for t in TOOLS:
-        api_tools.append(
-            {
-                "type": "function",
-                "function": {
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": t.schema["parameters"],
-                },
-            }
-        )
-    return api_tools
+    """Return the list of tools formatted for chat.completions.create."""
+    return [
+        {
+            "type": "function",
+            "function": {
+                "name": t.name,
+                "description": t.description,
+                "parameters": t.schema.get("parameters", {}),
+            },
+        }
+        for t in TOOLS
+    ]
 
-# --------------------------------------------------------------------------- #
-#  Convenience for quick introspection in the REPL
-# --------------------------------------------------------------------------- #
+# ----- Debug ------------------------------------------------------------
 if __name__ == "__main__":
-    print(json.dumps(get_tools(), indent=2))
+    import json
+    print(json.dumps([t.__dict__ for t in TOOLS], indent=2))
