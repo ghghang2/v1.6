@@ -1020,6 +1020,61 @@ __all__ = ["func", "name", "description"]
 
 ```
 
+## app/tools/run_tests.py
+
+```python
+# app/tools/run_tests.py
+"""Run the repository's pytest suite and return a JSON summary.
+
+The function returns a stringified JSON object that contains:
+  * passed   – number of tests that passed
+  * failed   – number of tests that failed
+  * errors   – number of errored tests
+  * output   – the raw stdout from pytest
+
+If anything goes wrong, the JSON payload contains an `error` key.
+"""
+
+import json, subprocess
+from pathlib import Path
+from typing import Dict
+
+
+def _run_tests() -> str:
+    """Execute `pytest -q` in the repository root and return JSON."""
+    try:
+        proc = subprocess.run(
+            ["pytest", "-q"],
+            capture_output=True,
+            text=True,
+            cwd=Path(__file__).resolve().parents[2],  # repo root
+        )
+
+        # Parse the final line: "X passed, Y failed, Z errors"
+        stats_line = proc.stdout.splitlines()[-1]
+        passed = int(stats_line.split()[1].split(":")[0])
+        failed = int(stats_line.split()[2].split(":")[0])
+        errors = int(stats_line.split()[3].split(":")[0])
+
+        result: Dict = {
+            "passed": passed,
+            "failed": failed,
+            "errors": errors,
+            "output": proc.stdout,
+        }
+        return json.dumps(result)
+
+    except Exception as exc:
+        return json.dumps({"error": str(exc)})
+
+# Public attributes for the discovery logic
+func = _run_tests
+name = "run_tests"
+description = "Run the repository's pytest suite and return the results."
+__all__ = ["func", "name", "description"]
+
+```
+
 ## app/utils.py
 
 ```python
@@ -1153,6 +1208,7 @@ def is_repo_up_to_date(repo_path: Path) -> bool:
 #  Streamlit UI
 # --------------------------------------------------------------------------- #
 def main():
+    
     # tab_chat, tab_log = st.tabs(["Chat", "Log"])
     st.set_page_config(page_title="Chat with GPT‑OSS", layout="wide")
     REPO_PATH = Path(__file__).parent
@@ -1168,15 +1224,6 @@ def main():
     # -------------------------------------------------------------------- #
     with st.sidebar:
 
-        # System prompt editor
-        prompt = st.text_area(
-            "System prompt",
-            st.session_state.system_prompt,
-            height=120,
-        )
-        if prompt != st.session_state.system_prompt:
-            st.session_state.system_prompt = prompt
-
         # New chat button
         if st.button("New Chat"):
             st.session_state.history = []
@@ -1184,7 +1231,7 @@ def main():
             st.success("Chat history cleared. Start fresh!")
 
         # Refresh docs button
-        if st.button("Refresh Docs"):
+        if st.button("Ask Codebase"):
             st.session_state.repo_docs = refresh_docs()
             st.success("Codebase docs updated!")
 
@@ -1207,7 +1254,7 @@ def main():
         # Available tools
         st.subheader("Available tools")
         for t in TOOLS:
-            st.markdown(f"- **{t.name}**: {t.description}")
+            st.markdown(f"*{t.name}*")
     # -------------------------------------------------------------------- #
     #  Chat history
     # -------------------------------------------------------------------- #
@@ -1267,23 +1314,6 @@ def main():
         else:
             # No tool calls – just store what we already got
             st.session_state.history.append((user_input, final_text))
-
-        
-        # log_path = Path("llama_server.log")
-
-        # st.subheader("llama‑server log")
-        # # ── Auto‑refresh every 5 000 ms (5 s) ─────────────────────────────────────
-        # # st_autorefresh(interval=1000, key="log-refresh")
-
-        # # ── Read the file (only the last 200 lines) ────────────────────────────────
-        # if log_path.exists():
-        #     lines = log_path.read_text(encoding="utf‑8").splitlines()
-        #     tail = "\n".join(lines[-100:])
-        # else:
-        #     tail = "🔴 Log file not found"
-
-        # # ── Show the tail in a code block ───────────────────────────────────────
-        # st.code(tail, language="text")
     
     # -------------------------------------------------------------------- #
     #  Browser‑leaving guard
@@ -1607,5 +1637,14 @@ if __name__ == "__main__":
             sys.exit(1)
     else:
         main()
+```
+
+## tests/test_basic.py
+
+```python
+def test_basic():
+    # A trivial test that always passes.
+    assert 1 + 1 == 2
+
 ```
 

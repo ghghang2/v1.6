@@ -63,6 +63,7 @@ def is_repo_up_to_date(repo_path: Path) -> bool:
 #  Streamlit UI
 # --------------------------------------------------------------------------- #
 def main():
+    
     # tab_chat, tab_log = st.tabs(["Chat", "Log"])
     st.set_page_config(page_title="Chat with GPT‑OSS", layout="wide")
     REPO_PATH = Path(__file__).parent
@@ -78,15 +79,6 @@ def main():
     # -------------------------------------------------------------------- #
     with st.sidebar:
 
-        # System prompt editor
-        prompt = st.text_area(
-            "System prompt",
-            st.session_state.system_prompt,
-            height=120,
-        )
-        if prompt != st.session_state.system_prompt:
-            st.session_state.system_prompt = prompt
-
         # New chat button
         if st.button("New Chat"):
             st.session_state.history = []
@@ -94,7 +86,7 @@ def main():
             st.success("Chat history cleared. Start fresh!")
 
         # Refresh docs button
-        if st.button("Refresh Docs"):
+        if st.button("Ask Codebase"):
             st.session_state.repo_docs = refresh_docs()
             st.success("Codebase docs updated!")
 
@@ -117,7 +109,7 @@ def main():
         # Available tools
         st.subheader("Available tools")
         for t in TOOLS:
-            st.markdown(f"- **{t.name}**: {t.description}")
+            st.markdown(f"*{t.name}*")
     # -------------------------------------------------------------------- #
     #  Chat history
     # -------------------------------------------------------------------- #
