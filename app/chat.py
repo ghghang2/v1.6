@@ -81,9 +81,14 @@ def stream_and_collect(
 
     full_resp = ""
     tool_calls_buffer: Dict[int, Dict[str, Any]] = {}
+    finished = False
 
     for chunk in stream:
-        delta = chunk.choices[0].delta
+        choice = chunk.choices[0]
+        if choice.finish_reason == "stop":
+            finished = True
+            break
+        delta = choice.delta
 
         # Regular text
         if delta.content:
@@ -104,7 +109,7 @@ def stream_and_collect(
                     tool_calls_buffer[idx]["arguments"] += tc_delta.function.arguments
 
     final_tool_calls = list(tool_calls_buffer.values()) if tool_calls_buffer else None
-    return full_resp, final_tool_calls
+    return full_resp, final_tool_calls, finished
 
 
 def process_tool_calls(
@@ -113,6 +118,7 @@ def process_tool_calls(
     tools: List[Dict[str, Any]],
     placeholder: st.delta_generator.delta_generator,
     tool_calls: Optional[List[Dict[str, Any]]],
+    finished: bool,
 ) -> str:
     """
     Execute each tool that the model requested and keep asking the model
@@ -136,15 +142,14 @@ def process_tool_calls(
         :func:`stream_and_collect`.  The function may return a new
         list of calls that the model wants to make after the tool
         result is sent back.
+    finished
+        Boolean indicating whether the assistant already finished a turn.
 
     Returns
     -------
-    tuple
-        ``(full_text, remaining_tool_calls)``.  *full_text* contains
-        the cumulative assistant reply **including** the text produced
-        by the tool calls.  *remaining_tool_calls* is ``None`` when the
-        model finished asking for tools; otherwise it is the list of calls
-        that still need to be handled.
+    str
+        The cumulative assistant reply **including** the text produced
+        by the tool calls.
     """
     if not tool_calls:
         return "", None

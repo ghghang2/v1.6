@@ -19,19 +19,19 @@ def test_run_command_basic():
     assert result["exit_code"] == 0
 
 
-def test_run_command_with_cwd():
-    """Verify that the cwd argument correctly changes the working directory."""
-    # Create a temporary subdirectory inside the repository root
-    cwd_dir = Path(__file__).parent / "tmp_subdir"
-    cwd_dir.mkdir(exist_ok=True)
-    # Run a command that prints the working directory
-    cwd_rel = str(cwd_dir.relative_to(Path(__file__).resolve().parents[1]))
-    result_json = run_command("pwd", cwd=cwd_rel)
+def test_run_command_in_repo_root():
+    """Verify that the command always runs in the repository root.
+
+    The :mod:`app.tools.run_command` implementation no longer accepts a
+    ``cwd`` argument – it always executes in the repository root.  This
+    test checks that the working directory reported by ``pwd`` matches the
+    repository root path.
+    """
+    repo_root = Path(__file__).resolve().parents[1]
+    result_json = run_command("pwd")
     result = json.loads(result_json)
     assert result["exit_code"] == 0
-    # The output should be the absolute path to the subdir
-    expected_path = str(cwd_dir)
-    assert result["stdout"].strip() == expected_path
+    assert result["stdout"].strip() == str(repo_root)
 
 
 def test_run_command_error():
@@ -42,3 +42,4 @@ def test_run_command_error():
     assert "stderr" in result
     assert "exit_code" in result
     assert result["exit_code"] != 0
+
