@@ -1,4 +1,3 @@
-# app/chat.py
 """Utilities that handle the chat logic.
 
 The original implementation of the chat handling lived directly in
@@ -7,11 +6,11 @@ the UI entry point small and makes the chat logic easier to unit‑test.
 
 Functions
 ---------
-* :func:`build_messages` – convert a conversation history into the
+* :func:`build_messages` — convert a conversation history into the
   list of messages expected by the OpenAI chat completion endpoint.
-* :func:`stream_and_collect` – stream the assistant response while
+* :func:`stream_and_collect` — stream the assistant response while
   capturing any tool calls.
-* :func:`process_tool_calls` – invoke the tools requested by the model
+* :func:`process_tool_calls` — invoke the tools requested by the model
   and generate subsequent assistant turns.
 """
 
@@ -25,6 +24,7 @@ import streamlit as st
 from .config import MODEL_NAME
 from .tools import TOOLS
 import time
+import concurrent.futures
 import logging
 
 logging.basicConfig(
@@ -112,7 +112,7 @@ def stream_and_collect(
             assistant_text += delta.content
             placeholder.markdown(assistant_text, unsafe_allow_html=True)
 
-        # Tool calls – accumulate arguments per call id.
+        # Tool calls — accumulate arguments per call id.
         if delta.tool_calls:
             for tc_delta in delta.tool_calls:
                 idx = tc_delta.index
@@ -184,7 +184,7 @@ def process_tool_calls(
                 args = json.loads(tc.get("arguments") or "{}")
             except Exception as exc:
                 args = {}
-                result = f"❌  JSON error: {exc}"
+                result = f"\u274c  JSON error: {exc}"
                 logger.exception("Failed to parse tool arguments", exc_info=True)
             else:
 
@@ -195,25 +195,44 @@ def process_tool_calls(
                 )
 
                 start = time.time()
-                
+
                 func = next(
                     (t.func for t in TOOLS if t.name == tc.get("name")), None
                 )
 
                 if func:
                     try:
-                        result = func(**args)
-                        duration = time.time() - start
-                        logger.info(
-                            "Tool %s finished in %.2fs", tc.get("name"), duration
-                        )
+                        # NOTE: Using a context‑managed ThreadPoolExecutor
+                        # blocks on shutdown until all worker threads have
+                        # finished, even if a ``future.result`` raises a
+                        # ``TimeoutError``. This caused the entire function
+                        # to hang for the remainder of the tool's runtime.
+                        #
+                        # Instead we create the executor manually and
+                        # immediately call ``shutdown(wait=False)`` after
+                        # the timeout, allowing the main thread to continue
+                        # while the background thread terminates.
+                        executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                        try:
+                            future = executor.submit(func, **args)
+                            result = future.result(timeout=10)  # 10‑second timeout
+                        except concurrent.futures.TimeoutError:  # pragma: no cover
+                            result = (
+                                "\u26d4  Tool call timed out after 10 seconds. "
+                                "Try a shorter or more specific request."
+                            )
+                        except Exception as exc:  # pragma: no cover
+                            result = f"\u274c  Tool error: {exc}"
+                        finally:
+                            # Avoid blocking on thread shutdown.
+                            executor.shutdown(wait=False)
                     except Exception as exc:  # pragma: no cover
-                        result = f"❌  Tool error: {exc}"
+                        result = f"\u274c  Tool error: {exc}"
                         logger.exception("Tool raised an exception", exc_info=True)
                 else:
-                    result = f"⚠️  Unknown tool '{tc.get('name')}'"
+                    result = f"\u26a0\ufe0f  Unknown tool '{tc.get('name')}'"
                     
-            preview = result[:10] + ("…" if len(result) > 10 else "")
+            preview = result[:10] + ("\u2026" if len(result) > 10 else "")
             tool_block = (
                 f"<details>"
                 f"<summary>{tc.get('name')}|`{json.dumps(args)}`|{preview}</summary>"
