@@ -270,10 +270,13 @@ def stop() -> None:
 
         except OSError as exc:
             # If the process is already dead, we’re fine
-            if exc.errno == errno.ESRCH:
+            try:
+                if exc.errno == errno.ESRCH:
+                    print(f"⚠️  {name} (PID {pid}) not running")
+                else:
+                    print(f"❌  Error stopping {name} (PID {pid}): {exc}")
+            except: 
                 print(f"⚠️  {name} (PID {pid}) not running")
-            else:
-                print(f"❌  Error stopping {name} (PID {pid}): {exc}")
     
     # Optionally wait a moment for processes to exit
     time.sleep(1)

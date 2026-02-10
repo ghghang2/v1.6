@@ -6876,3 +6876,7 @@ prompt eval time =     550.05 ms /   114 tokens (    4.83 ms per token,   207.25
 slot      release: id  1 | task 96141 | stop processing: n_tokens = 49724, truncated = 0
 srv  update_slots: all slots are idle
 srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 200
+srv  params_from_: Chat format: GPT-OSS
+slot get_availabl: id  1 | task -1 | selected slot by LCP similarity, sim_best = 0.931 (> 0.100 thold), f_keep = 0.012
+srv  get_availabl: updating prompt cache
+srv   prompt_save:  - saving prompt with length 49724, total state size = 1189.988 MiB
