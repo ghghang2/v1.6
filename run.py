@@ -86,16 +86,16 @@ def _save_service_info(tunnel_url: str, llama: int, streamlit: int, ngrok: int) 
 # --------------------------------------------------------------------------- #
 def main() -> None:
     """Start all services and record their state."""
-    # --- 1️⃣  Validate environment -----------------------------------------
+    # ---   Validate environment -----------------------------------------
     if not os.getenv("GITHUB_TOKEN") or not os.getenv("NGROK_TOKEN"):
         sys.exit("[ERROR] Both GITHUB_TOKEN and NGROK_TOKEN must be set")
 
-    # --- 2️⃣  Ensure ports are free ----------------------------------------
+    # ---  Ensure ports are free ----------------------------------------
     for p in PORTS:
         if not _is_port_free(p):
             sys.exit(f"[ERROR] Port {p} is already in use")
 
-    # --- 3️⃣  Download the pre‑built llama‑server -------------------------
+    # ---  Download the pre‑built llama‑server -------------------------
     _run(
         f"gh release download --repo {REPO} --pattern llama-server --skip-existing",
         shell=True,
@@ -103,7 +103,7 @@ def main() -> None:
     )
     _run("chmod +x ./llama-server", shell=True)
 
-    # --- 4️⃣  Start llama‑server ------------------------------------------
+    # ---  Start llama‑server ------------------------------------------
     LLAMA_LOG_file = LLAMA_LOG.open("w", encoding="utf-8", buffering=1)
     llama_proc = subprocess.Popen(
             ["./llama-server", "-hf", MODEL, "--port", "8000", "--metrics"],#, "--chat-template-kwargs", '{"reasoning_effort":"high"}'
@@ -111,14 +111,29 @@ def main() -> None:
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    print(f"✅  llama-server started (PID: {llama_proc.pid}) – waiting…")
+    print(f"llama-server started (PID: {llama_proc.pid}) – waiting…")
     if not _wait_for("http://localhost:8000/health", timeout=360):
         llama_proc.terminate()
         sys.exit("[ERROR] llama-server failed to start")
 
-    # --- 5️⃣  Install required Python packages ----------------------------
-    print("📦  Installing Python dependencies…")
+    # --- Install required Python packages ----------------------------
+    print("Installing Python dependencies…")
+    # 1. Basic Python packages for the UI and GitHub integration.
     _run("pip install -q streamlit pygithub pyngrok", shell=True)
+    # 2. Install Playwright and the Firefox browser bundle.
+    #    The Playwright installation requires system libraries; install those
+    #    first via apt-get. These commands are prefixed with ``sudo`` so they
+    #    run as root, which is typical for a Docker container or a CI
+    #    environment.
+    _run("sudo apt-get update", shell=True)
+    _run(
+        "sudo apt-get install -y libxcomposite1 libgtk-3-0 libatk1.0-0",
+        shell=True,
+    )
+    _run("pip install -q playwright", shell=True)
+    # Playwright may need additional system dependencies; the --with-deps
+    # flag instructs Playwright to install them automatically.
+    _run("playwright install --with-deps firefox", shell=True)
 
     # --- 6️⃣  Start Streamlit UI ------------------------------------------
     STREAMLIT_LOG_file = STREAMLIT_LOG.open("w", encoding="utf-8", buffering=1)
@@ -136,12 +151,12 @@ def main() -> None:
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    print(f"✅  Streamlit started (PID: {streamlit_proc.pid}) – waiting…")
+    print(f"Streamlit started (PID: {streamlit_proc.pid}) – waiting…")
     if not _wait_for("http://localhost:8002", timeout=30):
         streamlit_proc.terminate()
         sys.exit("[ERROR] Streamlit failed to start")
 
-    # --- 7️⃣  Start ngrok tunnel ------------------------------------------
+    # --- Start ngrok tunnel ------------------------------------------
     NGROK_LOG_file = NGROK_LOG.open("w", encoding="utf-8", buffering=1)
     ngrok_config = f"""version: 2
 authtoken: {os.getenv('NGROK_TOKEN')}
@@ -158,7 +173,7 @@ tunnels:
         stderr=subprocess.STDOUT,
         start_new_session=True,
     )
-    print(f"✅  ngrok started (PID: {ngrok_proc.pid}) – waiting…")
+    print(f"ngrok started (PID: {ngrok_proc.pid}) – waiting…")
     if not _wait_for("http://localhost:4040/api/tunnels", timeout=15):
         ngrok_proc.terminate()
         sys.exit("[ERROR] ngrok API did not become available")
@@ -175,13 +190,13 @@ tunnels:
     except Exception as exc:
         sys.exit(f"[ERROR] Could not retrieve ngrok URL: {exc}")
 
-    print("✅  ngrok tunnel established")
-    print(f"🌐  Public URL: {tunnel_url}")
+    print("ngrok tunnel established")
+    print(f"Public URL: {tunnel_url}")
 
     # Persist state
     _save_service_info(tunnel_url, llama_proc.pid, streamlit_proc.pid, ngrok_proc.pid)
 
-    print("\n🎉  ALL SERVICES RUNNING SUCCESSFULLY!")
+    print("\nALL SERVICES RUNNING SUCCESSFULLY!")
     print("=" * 70)
 
 # --------------------------------------------------------------------------- #
@@ -218,20 +233,20 @@ def status() -> None:
     ]:
         try:
             os.kill(pid, 0)
-            print(f"✅  {name} is running (PID: {pid})")
+            print(f"{name} is running (PID: {pid})")
         except OSError:
-            print(f"❌  {name} is NOT running (PID: {pid})")
+            print(f"{name} is NOT running (PID: {pid})")
 
     # Verify tunnel
-    print("\n🔍  Checking ngrok tunnel status…")
+    print("\nChecking ngrok tunnel status…")
     try:
         tunnel_url = _load_service_info()["tunnel_url"]
         if _wait_for(tunnel_url, timeout=10):
-            print(f"✅  Tunnel is active: {tunnel_url}")
+            print(f"Tunnel is active: {tunnel_url}")
         else:
-            print("⚠️  Tunnel is not reachable")
+            print("Tunnel is not reachable")
     except Exception as e:
-        print(f"⚠️  Tunnel check failed: {e}")
+        print(f"Tunnel check failed: {e}")
 
     # Show recent logs
     for name, log in [("llama-server", LLAMA_LOG), ("Streamlit", STREAMLIT_LOG), ("ngrok", NGROK_LOG)]:
@@ -239,17 +254,17 @@ def status() -> None:
         if log.exists():
             print(_run(f"tail -5 {log}", shell=True, capture=True))
         else:
-            print(f"❌  Log file {log} not found")
+            print(f"Log file {log} not found")
 
 def stop() -> None:
     """Terminate all services and clean up."""
     try:
         info = _load_service_info()
     except FileNotFoundError:
-        print("❌  No service_info.json – nothing to stop")
+        print("No service_info.json – nothing to stop")
         return
 
-    print("🛑  Stopping services…")
+    print("Stopping services…")
     for name, pid in [
         ("llama-server", info["llama_server_pid"]),
         ("Streamlit", info["streamlit_pid"]),
@@ -258,25 +273,25 @@ def stop() -> None:
         try:
             # First try a graceful terminate
             os.killpg(pid, signal.SIGTERM)
-            print(f"✅  Sent SIGTERM to {name} (PID {pid})")
+            print(f"Sent SIGTERM to {name} (PID {pid})")
             try:
                 proc = psutil.Process(pid)
                 for child in proc.children(recursive=True):
                     child.terminate()
                 proc.terminate()
-                print(f"✅  {name} (PID {pid}) stopped (psutil)")
+                print(f"{name} (PID {pid}) stopped (psutil)")
             except: 
-                print(f"✅  {name} (PID {pid}) not running (psutil)")
+                print(f"{name} (PID {pid}) not running (psutil)")
 
         except OSError as exc:
             # If the process is already dead, we’re fine
             try:
                 if exc.errno == errno.ESRCH:
-                    print(f"⚠️  {name} (PID {pid}) not running")
+                    print(f"{name} (PID {pid}) not running")
                 else:
-                    print(f"❌  Error stopping {name} (PID {pid}): {exc}")
+                    print(f"Error stopping {name} (PID {pid}): {exc}")
             except: 
-                print(f"⚠️  {name} (PID {pid}) not running")
+                print(f"{name} (PID {pid}) not running")
     
     # Optionally wait a moment for processes to exit
     time.sleep(1)
@@ -288,7 +303,7 @@ def stop() -> None:
         except FileNotFoundError:
             pass
 
-    print("🧹  Cleaned up service info files")
+    print("Cleaned up service info files")
 
 # --------------------------------------------------------------------------- #
 #  CLI entry point
