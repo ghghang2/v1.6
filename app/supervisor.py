@@ -110,12 +110,13 @@ class SupervisorProcess(mp.Process):
             log.debug("Policy decision for event %s: %s", event, policy_decision)
             if policy_decision:
                 # Create an interjection – a simple apology message
-                interjection = AgentEvent(
-                    role="assistant",
-                    content="Apology: I made a mistake. Let's correct it.",
-                )
-                log.info("Supervisor interjecting: %s", interjection)
-                self.agent_inbox.put(interjection)
+                interjection_content = "Apology: I made a mistake. Let's correct it."
+                interjection_msg = {
+                    "session_id": event.get("session_id", "supervisor"),
+                    "prompt": interjection_content,
+                }
+                log.info("Supervisor interjecting: %s", interjection_msg)
+                self.agent_inbox.put(interjection_msg)
             # Continue loop
         log.info("Supervisor terminating")
 

@@ -41,18 +41,18 @@ def test_supervisor_interjection(monkeypatch):
     prompt = "This will error"
     supervisor.agent_inbox.put({"session_id": session_id, "prompt": prompt})
 
-    # Wait until the agent finishes the original request
+    # Wait until the supervisor processes the done event via its own outbound queue
     done_received = False
     start = time.time()
     while time.time() - start < 5:
         try:
-            ev = supervisor.agent_outbound.get(timeout=0.1)
+            ev = supervisor.supervisor_outbound.get(timeout=0.1)
         except Exception:
             continue
         if ev.get("type") == "done" and ev.get("session_id") == session_id:
             done_received = True
             break
-    assert done_received, "Agent did not finish the request"
+    assert done_received, "Supervisor did not finish the request"
 
     # After the agent is done, supervisor should have queued an interjection
     # which will be streamed as tokens on agent_outbound.
