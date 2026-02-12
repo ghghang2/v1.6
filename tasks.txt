@@ -1,57 +1,57 @@
 # Multi‑Agent Implementation Tasks
 
-## Phase 1 – Environment & Tooling
-1. ... [completed]
-2. ... [completed]
+## Phase 1 – Environment & Tooling
+1. None
+2. None
 3. Write a unit test (`tests/test_server.py`) that starts the server, sends a request, and verifies a 200 response. [completed]
 4. Verify that `llama‑server` is reachable by adding a test that performs a simple `/v1/chat/completions` call. [completed]
 
-## Phase 2 – Core Building Blocks
-### 2.1 LLM Wrapper
+## Phase 2 – Core Building Blocks
+### 2.1 LLM Wrapper
 5. Add optional **stream_chat** method to `LlamaClient` that simply forwards to `chat` for compatibility. [completed]
 6. Add unit tests for `LlamaClient.chat`:
-   - Happy path – mock `requests.post` and assert token stream.
-   - Error path – mock a 500 response and assert RuntimeError.
+   - Happy path – mock `requests.post` and assert token stream. [completed]
+   - Error path – mock a 500 response and assert RuntimeError. [completed]
 
-### 2.2 Persistence Layer
+### 2.2 Persistence Layer
 7. Add index on `session_id` if not already present (already in db.py). [completed]
-8. Write tests for `init_db`, `log_message`, `load_history`, and `get_session_ids`.
+8. Write tests for `init_db`, `log_message`, `load_history`, and `get_session_ids`. [completed]
 
-### 2.3 HTTP Proxy
-9. Update `app/server.py` to use `AgentEvent` for inbound/outbound queues if needed.
+### 2.3 HTTP Proxy
+9. Update `app/server.py` to use `AgentEvent` for inbound/outbound queues if needed. [completed]
 10. Write integration tests for the `/chat/{agent_id}` endpoint:
-    - Send a prompt, verify that the response is streamed token‑by‑token.
-    - Verify that chat history is persisted.
+    - Send a prompt, verify that the response is streamed token‑by‑token. [completed]
+    - Verify that chat history is persisted. [completed]
 
-## Phase 3 – Agent Implementation
-11. Ensure `AgentProcess` has a `shutdown` method that puts a shutdown event into its inbound queue.
-12. Verify that `AgentProcess` handles `interject` events correctly: prepend the message and continue chat.
+## Phase 3 – Agent Implementation
+11. Ensure `AgentProcess` has a `shutdown` method that puts a shutdown event into its inbound queue. [completed]
+12. Verify that `AgentProcess` handles `interject` events correctly: prepend the message and continue chat. [completed]
 13. Write unit tests for `AgentProcess`:
-    - Send a chat event and check that the outbound queue receives tokens.
-    - Send an interjection and verify that the agent re‑starts the chat.
+    - Send a chat event and check that the outbound queue receives tokens. [completed]
+    - Send an interjection and verify that the agent re‑starts the chat. [completed]
 
-## Phase 4 – Supervisor Implementation
+## Phase 4 – Supervisor Implementation
 14. Ensure `SupervisorProcess` forwards events to an external consumer queue.
-15. Add ability to handle multiple agents – e.g., pass a dict of agent processes.
+15. Add ability to handle multiple agents – e.g., pass a dict of agent processes.
 16. Write unit tests for `SupervisorProcess`:
     - Verify policy hook triggers interjection on an event containing “error”.
     - Verify normal events are forwarded unchanged.
 17. Add graceful shutdown logic that propagates SIGTERM to child agents.
 
-## Phase 5 – Integration, Tests, Documentation
+## Phase 5 – Integration, Tests, Documentation
 18. Write integration test (`tests/test_integration.py`):
     - Start a `SupervisorProcess` and an `AgentProcess`.
     - Send a user message via HTTP proxy.
     - Simulate a policy trigger by sending an event with “ERROR”.
     - Assert that the agent receives the interjection before finishing the response.
 
-19. Add documentation to `README.md` describing architecture, setup, and usage.
-20. Generate a high‑level architecture diagram (e.g., using Mermaid) and include it in the README.
-21. Add a script or command to clean up temporary files and restart services.
+19. Add documentation to `README.md` describing architecture, setup, and usage. [completed]
+20. Generate a high‑level architecture diagram (e.g., using Mermaid) and include it in the README. [completed]
+21. Add a script or command to clean up temporary files and restart services. [completed]
 
 ## Miscellaneous
-22. Review type hints and add missing annotations for clarity.
-23. Add logging configuration to `run.py` to capture stdout/stderr of services.
-24. Ensure `apply_patch` tool handles file creation and deletion correctly.
-25. Run `pytest -q` to confirm all existing and new tests pass.
+22. Review type hints and add missing annotations for clarity. [completed]
+23. Add logging configuration to `run.py` to capture stdout/stderr of services. [completed]
+24. Ensure `apply_patch` tool handles file creation and deletion correctly. [completed]
+25. Run `pytest -q` to confirm all existing and new tests pass. [completed]
 

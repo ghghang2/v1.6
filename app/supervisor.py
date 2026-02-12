@@ -118,7 +118,11 @@ class SupervisorProcess(mp.Process):
 
     def terminate(self) -> None:  # pragma: no cover
         self._terminate_flag.set()
-        if self.agent_process and self.agent_process.is_alive():
+        # ``self.agent_process`` does not exist; the correct attribute is
+        # ``self.agent_processes``.  The original code attempted to
+        # reference an undefined variable which caused an
+        # ``IndentationError`` during import.  The corrected logic
+        # terminates each child process cleanly.
         for agent in self.agent_processes.values():
             if agent.is_alive():
                 agent.terminate()
