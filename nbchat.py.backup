@@ -1,0 +1,237 @@
+"""ipywidgets chat client.
+
+The original project ships a Streamlit UI in :mod:`app`.  For
+interactive notebooks we provide a minimal ipywidgets wrapper that
+reproduces the core behaviour:
+
+* Conversation history is persisted in ``chat_history.db`` using the
+  helper functions from :mod:`app.db`.
+* Messages are built with :func:`app.chat.build_messages`.
+* Streaming responses are shown incrementally and tool calls are
+  executed immediately.
+* A collapsible *analysis* block is rendered for the model’s reasoning.
+
+Only standard library imports and ``ipywidgets`` are required.  All
+heavy dependencies (OpenAI client, tools, etc.) are imported lazily.
+"""
+
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+from typing import Dict, List, Tuple
+import uuid
+import ipywidgets as widgets
+from IPython.display import clear_output, display
+
+# Lazy imports to avoid heavy modules when the notebook is not used.
+from app.client import get_client
+from app.tools import get_tools
+from app.db import init_db, load_history, log_message, log_tool_msg
+from app.config import DEFAULT_SYSTEM_PROMPT, MODEL_NAME
+from app.chat import build_messages, stream_and_collect
+
+__all__ = ["run_chat"]
+
+
+def _render_conversation(history: List[Tuple], output: widgets.Output) -> None:
+    """Render the conversation in ``output``.
+
+    ``history`` is a list of ``(role, content, tool_id, tool_name, tool_args)``.
+    """
+    with output:
+        clear_output(wait=True)
+        for role, msg, tool_id, tool_name, tool_args in history:
+            if role == "assistant" and tool_name:
+                preview = msg[:10] + ("…" if len(msg) > 10 else "")
+                block = (
+                    f"<details>"
+                    f"<summary>{tool_name}|`{tool_args}`|{preview}</summary>"
+                    f"\n\n`{msg}`\n\n"
+                    f"</details>"
+                )
+                print(block)
+            else:
+                print(f"{role}: {msg}")
+
+
+def _handle_tool_calls(
+    client, messages, session_id, tool_calls, history
+):
+    """Execute tool calls and update ``history``.
+
+    Parameters
+    ----------
+    client: openai client
+    messages: list of messages passed to the model
+    session_id: UUID string for the notebook session
+    tool_calls: list of tool call dicts returned by the model
+    history: mutable list of ``(role, content, tool_id, tool_name, tool_args)``
+    """
+    tools = get_tools()
+    for tc in tool_calls:
+        # The tool call objects returned by the model may be plain dicts
+        # (when we construct them ourselves) or objects with a
+        # ``function`` attribute.  Handle both formats.
+        if isinstance(tc, dict) and "name" in tc:
+            name = tc["name"]
+            args_str = tc.get("arguments") or "{}"
+        else:
+            # Fallback for the original OpenAI ``tool_call`` structure
+            fn = getattr(tc, "function", None)
+            if fn is None:
+                continue
+            name = fn.name
+            args_str = getattr(fn, "arguments", "{}") or "{}"
+        try:
+            args = json.loads(args_str)
+        except Exception:
+            args = {}
+        tool_def = next((t for t in tools if t["function"]["name"] == name), None)
+        if not tool_def:
+            result = f"Unknown tool {name}"
+        else:
+            module_name = name
+            mod = __import__(f"app.tools.{module_name}", fromlist=["func"])
+            tool_func = getattr(mod, "func")
+            try:
+                result = tool_func(**args)
+            except Exception as exc:
+                result = f"Tool error: {exc}"
+        # Append tool output to history
+        history.append(("assistant", result, tc.get("id"), name, args_str))
+        log_tool_msg(session_id, tc.get("id"), name, args_str, result)
+
+
+def run_chat() -> None:
+    """Display an ipywidgets chat UI.
+
+    The UI consists of a text input, a send button and a scrolling
+    output area.  Pressing the button or hitting Enter triggers a
+    request to the local model.  The assistant’s answer is streamed
+    and displayed incrementally.  Any tool calls are executed and
+    their results are appended to the conversation.
+    """
+
+    chat_output = widgets.Output(layout=widgets.Layout(width="100%"))
+    msg_input = widgets.Text(
+        placeholder="Type your message...",
+        description="You:",
+        layout=widgets.Layout(width="80%"),
+    )
+    send_btn = widgets.Button(description="Send", button_style="primary")
+    input_box = widgets.HBox([msg_input, send_btn])
+
+    # Conversation history: (role, content, tool_id, tool_name, tool_args)
+    conversation: List[Tuple] = []
+    # Persist session ID in a file so that the same session is reused
+    # across notebook reloads.
+    session_file = Path("session_id.txt")
+    session_id = str(uuid.uuid4())
+    session_file.write_text(session_id)
+    init_db()
+    rows = load_history(session_id)
+    conversation.extend([(role, content, "", "", "") for role, content in rows])
+
+    def _refresh():
+        _render_conversation(conversation, chat_output)
+
+    def _handle_send(_):
+        user_msg = msg_input.value.strip()
+        if not user_msg:
+            return
+        conversation.append(("user", user_msg, "", "", ""))
+        _refresh()
+        log_message(session_id, "user", user_msg)
+
+        client = get_client()
+        # Build messages using the full conversation history
+        messages = build_messages(
+            conversation,
+            DEFAULT_SYSTEM_PROMPT,
+            user_input=user_msg,
+        )
+        # Stream assistant response and update UI incrementally
+        assistant_text = ""
+        reasoning_text = ""
+        tool_calls_buffer: Dict[int, Dict[str, str]] = {}
+        stream = client.chat.completions.create(
+            model=MODEL_NAME,
+            messages=messages,
+            stream=True,
+            tools=get_tools(),
+        )
+        for chunk in stream:
+            choice = chunk.choices[0]
+            if choice.finish_reason == "stop":
+                break
+            delta = choice.delta
+            # Reasoning
+            if hasattr(delta, "reasoning_content"):
+                reasoning_text += delta.reasoning_content or ""
+                # Append analysis entry immediately before assistant
+                if not any(r[0] == "analysis" for r in conversation):
+                    conversation.append(("analysis", reasoning_text, "", "", ""))
+                    log_message(session_id, "analysis", reasoning_text)
+                _refresh()
+            # Assistant content
+            if delta.content:
+                assistant_text += delta.content
+                conversation.append(("assistant", assistant_text, "", "", ""))
+                log_message(session_id, "assistant", assistant_text)
+                _refresh()
+            # Tool calls
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_buffer:
+                        tool_calls_buffer[idx] = {
+                            "id": tc_delta.id,
+                            "name": tc_delta.function.name,
+                            "arguments": tc_delta.function.arguments or "{}",
+                        }
+                        conversation.append(("assistant", "Executing...", tc_delta.id, tc_delta.function.name, tc_delta.function.arguments or "{}"))
+                        log_tool_msg(session_id, tc_delta.id, tc_delta.function.name, tc_delta.function.arguments or "{}", "Executing...")
+                        _refresh()
+        # Handle tool calls after stream ends
+        if tool_calls_buffer:
+            _handle_tool_calls(client, messages, session_id, list(tool_calls_buffer.values()), conversation)
+            # After executing tools, get a new assistant turn for the same user input
+            new_messages = build_messages(
+                conversation,
+                DEFAULT_SYSTEM_PROMPT,
+                user_input=user_msg,
+            )
+            assistant_text = ""
+            reasoning_text = ""
+            stream = client.chat.completions.create(
+                model=MODEL_NAME,
+                messages=new_messages,
+                stream=True,
+                tools=get_tools(),
+            )
+            for chunk in stream:
+                choice = chunk.choices[0]
+                if choice.finish_reason == "stop":
+                    break
+                delta = choice.delta
+                if hasattr(delta, "reasoning_content"):
+                    reasoning_text += delta.reasoning_content or ""
+                    if not any(r[0] == "analysis" for r in conversation):
+                        conversation.append(("analysis", reasoning_text, "", "", ""))
+                        log_message(session_id, "analysis", reasoning_text)
+                    _refresh()
+                if delta.content:
+                    assistant_text += delta.content
+                    conversation.append(("assistant", assistant_text, "", "", ""))
+                    log_message(session_id, "assistant", assistant_text)
+                    _refresh()
+            if tool_calls_buffer:
+                _handle_tool_calls(client, new_messages, session_id, list(tool_calls_buffer.values()), conversation)
+        _refresh()
+        msg_input.value = ""
+
+    msg_input.on_submit(_handle_send)
+    send_btn.on_click(_handle_send)
+    display(input_box, chat_output)
