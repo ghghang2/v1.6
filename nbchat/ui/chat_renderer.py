@@ -95,14 +95,28 @@ def render_reasoning(content: str, open: bool = True) -> widgets.HTML:
     return _widget(html)
 
 
-def render_tool(content: str, tool_name: str, preview: Optional[str] = None) -> widgets.HTML:
+def render_tool(
+    content: str,
+    tool_name: str,
+    tool_args: str = "",
+    preview: Optional[str] = None,
+) -> widgets.HTML:
     """Render a tool result.
 
-    ``preview`` is a short excerpt shown in the collapsed summary.
-    If ``None`` the first 50 characters of ``content`` are used.
+    Parameters
+    ----------
+    content:
+        The raw output from the tool.
+    tool_name:
+        Name of the tool.
+    tool_args:
+        Arguments that were passed to the tool.  These are shown in the summary.
+    preview:
+        Short excerpt shown in the collapsed summary.  If ``None`` the first
+        50 characters of ``content`` are used.
     """
 
-    html = tool_result_html(content, tool_name=tool_name, preview=preview)
+    html = tool_result_html(content, tool_name=tool_name, preview=preview, tool_args=tool_args)
     return _widget(html)
 
 

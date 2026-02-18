@@ -39,6 +39,10 @@ class ChatUI:
 
         self.session_ids = db.get_session_ids()
 
+        # Streaming control
+        self._stop_streaming = False
+        self._stream_thread = None
+
         self._create_widgets()
         self._start_metrics_updater()
         self._load_history()
@@ -115,10 +119,17 @@ class ChatUI:
             button_style="success",
             layout=widgets.Layout(width="5%", padding="0", margin="0")
         )
-        self.input_box = widgets.HBox([self.input_text, self.send_btn])
+        # Stop button added
+        self.stop_btn = widgets.Button(
+            description="Stop",
+            button_style="warning",
+            layout=widgets.Layout(width="5%", padding="0", margin="0")
+        )
+        self.input_box = widgets.HBox([self.input_text, self.send_btn, self.stop_btn])
 
         # Textarea does not support on_submit; use the Send button only.
         self.send_btn.on_click(self._on_send)
+        self.stop_btn.on_click(self._on_stop)
 
         main = widgets.VBox([
             widgets.HTML(""),
@@ -207,7 +218,7 @@ class ChatUI:
                 except Exception:
                     children.append(self._render_assistant_message(content, "", "", ""))
             elif role == "tool":
-                children.append(renderer.render_tool(content, tool_name))
+                children.append(renderer.render_tool(content, tool_name, tool_args))
         self.chat_history.children = children
 
     def _render_assistant_message(self, content: str, tool_id: str, tool_name: str, tool_args: str) -> widgets.HTML:
@@ -224,7 +235,7 @@ class ChatUI:
             return renderer.render_assistant(content)
 
     def _render_tool_message(self, content: str, tool_id: str, tool_name: str, tool_args: str) -> widgets.HTML:
-        return renderer.render_tool(content, tool_name)
+        return renderer.render_tool(content, tool_name, tool_args)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -255,7 +266,17 @@ class ChatUI:
         self.chat_history.children = list(self.chat_history.children) + [renderer.render_user(user_input)]
         db = lazy_import("nbchat.core.db")
         db.log_message(self.session_id, "user", user_input)
-        self._process_conversation_turn()
+        # Run conversation turn in separate thread
+        self._stop_streaming = False
+        if self._stream_thread and self._stream_thread.is_alive():
+            # If a previous thread is running, ignore or handle accordingly
+            pass
+        self._stream_thread = threading.Thread(target=self._process_conversation_turn, daemon=True)
+        self._stream_thread.start()
+
+    def _on_stop(self, *args):
+        """Set flag to stop streaming response."""
+        self._stop_streaming = True
 
     # ------------------------------------------------------------------
     # Core conversation processing (no rebuilds, only appends)
@@ -273,9 +294,10 @@ class ChatUI:
         tool_turn_count = 0
 
         while tool_turn_count <= self.MAX_TOOL_TURNS:
+            # stream response from assistant
             reasoning, content, tool_calls, finish_reason = self._stream_assistant_response(
-                client, tools, messages
-            )
+                    client, tools, messages
+                )
 
             # Store reasoning in history and database (UI already updated via placeholder)
             if reasoning:
@@ -348,6 +370,10 @@ class ChatUI:
         )
 
         for chunk in stream:
+            # Check if stop requested
+            if self._stop_streaming:
+                stream.close()
+                break
             choice = chunk.choices[0]
             if choice.finish_reason:
                 finish_reason = choice.finish_reason

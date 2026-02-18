@@ -168,7 +168,7 @@ def assistant_message_html(content: str, prefix: str = "<b>Assistant:</b> ") -> 
     styled_content = f"{prefix}{styled_content}"
     return wrap_in_div(styled_content, assistant_style_dict())
 
-def reasoning_html(content: str, summary: str = "<b>Reasoning</b>", open: bool = True) -> str:
+def reasoning_html(content: str, summary: str = "<b>Reasoning</b>", open: bool = False) -> str:
     """Generate HTML for a reasoning message.
     The reasoning title and the content are placed on the same line by
     embedding the content directly after the ``<summary>`` tag.  This
@@ -181,17 +181,18 @@ def reasoning_html(content: str, summary: str = "<b>Reasoning</b>", open: bool =
     raw_html = re.sub(r'<p([^>]*)>', r'<p\1 style="margin:0;">', raw_html)
     details_open = "open" if open else ""
     # Place the content immediately after the summary tag.
-    inner = f"<details {details_open} style=\"margin:0; padding:0;\"><summary style=\"margin:0;\">{summary} {raw_html}</summary></details>"
+    # Use flex layout to keep header and content on the same line.
+    inner = f"<details {details_open} style=\"margin:0; padding:0;\"><summary style=\"display:flex; align-items:top; margin:0;\">{summary} {raw_html}</summary></details>"
     return wrap_in_div(inner, reasoning_style_dict())
 
 def reasoning_placeholder_html() -> str:
-    """Generate HTML for an empty reasoning placeholder (with open details).
+    """Generate HTML for an empty reasoning placeholder (collapsed).
     The details element is styled with zero margin/padding for consistency.
     """
     style = style_dict_to_css(reasoning_style_dict())
-    return f'<div style="{style}"><details open style="margin:0; padding:0;"><summary style="margin:0;"><b>Reasoning</b></summary></details></div>'
+    return f'<div style="{style}"><details style="margin:0; padding:0;"><summary style="margin:0;"><b>Reasoning</b></summary></details></div>'
 
-def reasoning_html_with_content(content: str, open: bool = True) -> str:
+def reasoning_html_with_content(content: str, open: bool = False) -> str:
     """Generate HTML for reasoning with content (for streaming updates).
     The content is streamed inline next to the title.
     """
@@ -246,15 +247,40 @@ def assistant_full_html(reasoning: str, content: str, tool_calls: List[Dict[str,
     style = style_dict_to_css(assistant_full_style_dict())
     return f'<div style="{style}">{inner}</div>'
 
-def tool_result_html(content: str, tool_name: str = "", preview: str = "") -> str:
-    """Generate HTML for a tool result message."""
-    
+def tool_result_html(
+    content: str,
+    tool_name: str = "",
+    preview: str = "",
+    tool_args: str = "",
+):
+    """Generate HTML for a tool result message.
+
+    Parameters
+    ----------
+    content:
+        Full tool output.
+    tool_name:
+        Name of the tool that produced the result.
+    preview:
+        Short excerpt shown in the collapsed summary.  If omitted, the first 50
+        characters of ``content`` are used.
+    tool_args:
+        Arguments that were passed to the tool.  These are displayed in the
+        summary to provide context.
+    """
     if not preview:
         preview = content[:50] + ("..." if len(content) > 50 else "")
-    summary = f"<b>Tool result ({tool_name})</b>: {preview}" if tool_name else f"<b>Tool result:</b> {preview}"
+    if tool_name:
+        summary = f"<b>Tool result ({tool_name})</b>: {preview}"
+    else:
+        summary = f"<b>Tool result:</b> {preview}"
+    if tool_args:
+        # Escape for HTML
+        escaped_args = tool_args.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        summary += f" | <b>Args:</b> {escaped_args}"
     inner = f"""<details style=\"margin:0; padding:0;\">
         <summary>{summary}</summary>
-        <pre style="white-space: pre-wrap; word-wrap: break-word;">{content}</pre>
+        <pre style=\"white-space: pre-wrap; word-wrap: break-word;\">{content}</pre>
     </details>"""
     return wrap_in_div(inner, tool_style_dict())
 
@@ -341,9 +367,9 @@ def create_reasoning_widget(content: str, open: bool = True) -> "widgets.HTML":
     """Create a reasoning message widget."""
     return create_html_widget(reasoning_html(content, open=open))
 
-def create_tool_widget(content: str, tool_name: str = "") -> "widgets.HTML":
+def create_tool_widget(content: str, tool_name: str = "", tool_args: str = "") -> "widgets.HTML":
     """Create a tool result widget."""
-    return create_html_widget(tool_result_html(content, tool_name=tool_name))
+    return create_html_widget(tool_result_html(content, tool_name=tool_name, tool_args=tool_args))
 
 def create_assistant_with_tools_widget(
     content: str,
