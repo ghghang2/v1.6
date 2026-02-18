@@ -5,18 +5,7 @@ new modular structure.  They are copied verbatim to avoid having the
 legacy module depend on the new one.
 """
 
-import markdown
-
-def md_to_html(text: str) -> str:
-    """Convert markdown to HTML using fenced code blocks.
-
-    This is the same implementation that lived in the legacy file.
-    """
-    # Enable the tables extension so markdown tables render correctly.
-    return markdown.markdown(text, extensions=["fenced_code", "codehilite", "tables"])
-
-
-# Lazy import helper – copied from nbchat_v2.
+# Lazy import helper
 _client = None
 _tools = None
 _db_module = None

@@ -1,4 +1,13 @@
 import subprocess
+import markdown
+
+def md_to_html(text: str) -> str:
+    """Convert markdown to HTML using fenced code blocks.
+
+    This is the same implementation that lived in the legacy file.
+    """
+    # Enable the tables extension so markdown tables render correctly.
+    return markdown.markdown(text, extensions=["fenced_code", "codehilite", "tables"])
 
 def changed_files():
     # 1. Get list of files changed since the last push
