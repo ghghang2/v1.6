@@ -1,7 +1,6 @@
 .*
-sample_data
 llama-server
-__pycache__
+__*
 *.log
 *.yml
 *.json

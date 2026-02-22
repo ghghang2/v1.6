@@ -56,7 +56,7 @@ class ChatUI:
         )
         self._refresh_tools_list()
 
-        new_chat_btn = widgets.Button(description="New Chat", button_style="primary",
+        new_chat_btn = widgets.Button(description="+", button_style="primary",
                                       layout=widgets.Layout(width="100%"))
         new_chat_btn.on_click(self._on_new_chat)
 
@@ -68,7 +68,7 @@ class ChatUI:
         self.session_dropdown.observe(self._on_session_change, names="value")
 
         sidebar = widgets.VBox([
-            widgets.HTML("<h3>Chat Controls</h3>"),
+            # widgets.HTML("<h3>Chat Controls</h3>"),
             self.metrics_output,
             widgets.HTML("<hr>"),
             new_chat_btn,
