@@ -170,7 +170,10 @@ class ChatUI:
                                     tps = float(m.group("value"))
                                     break
                         emoji = "🟢" if proc else "⚫"
-                        content = f"<b>Server</b> {emoji}<br><b>TPS:</b> <code>{tps}</code><br><i>{time.strftime('%H:%M:%S')}</i>"
+                        # Use the shared code color constant from ``styles`` for
+                        # consistency across the UI.
+                        from nbchat.ui import styles
+                        content = f"<b>Server</b> {emoji}<br><b>TPS:</b> <code style=\"color:{styles.CODE_TEXT_COLOR};\">{tps}</code><br><i>{time.strftime('%H:%M:%S')}</i>"
                         # Append list of changed files to the metrics display
                         try:
                             changed_files_list = changed_files()
