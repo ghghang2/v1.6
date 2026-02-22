@@ -35,6 +35,10 @@ class ChatUI:
         self.history: List[Tuple[str, str, str, str, str]] = []
         self._stop_streaming = False
         self._stream_thread = None
+        # ------------------------------------------------------------------
+        # Thread‑safety primitives
+        # ------------------------------------------------------------------
+        self._history_lock = threading.Lock()
 
         self._create_widgets()
         self._start_metrics_updater()
@@ -214,17 +218,40 @@ class ChatUI:
             self._load_history()
 
     def _on_send(self, _):
+        """Send the current text.
+
+        This method now implements the *interjection* behaviour.  It is
+        fully thread‑safe: all shared state is accessed while holding
+        ``self._history_lock``.  The UI thread releases the lock before
+        waiting for the old stream thread to finish, keeping the UI
+        responsive.
+        """
         user_input = self.input_text.value.strip()
         if not user_input:
             return
-        self.input_text.value = ""
+
         db = lazy_import("nbchat.core.db")
-        self.history.append(("user", user_input, "", "", ""))
-        self._append(renderer.render_user(user_input))
-        db.log_message(self.session_id, "user", user_input)
-        self._stop_streaming = False
-        self._stream_thread = threading.Thread(target=self._process_conversation_turn, daemon=True)
-        self._stream_thread.start()
+        with self._history_lock:
+            # Stop an existing stream if it is running.
+            if self._stream_thread and self._stream_thread.is_alive():
+                self._stop_streaming = True
+                # Release the lock while we wait for the thread to finish.
+                # The thread itself checks the flag and exits.
+                self._stream_thread.join()
+
+            # Append the new user message.
+            self.history.append(("user", user_input, "", "", ""))
+            self._append(renderer.render_user(user_input))
+            db.log_message(self.session_id, "user", user_input)
+
+            # Clear the input box after logging.
+            self.input_text.value = ""
+            self._stop_streaming = False
+            self._stream_thread = threading.Thread(
+                target=self._process_conversation_turn,
+                daemon=True,
+            )
+            self._stream_thread.start()
 
     # ------------------------------------------------------------------
     # Conversation loop
@@ -238,6 +265,9 @@ class ChatUI:
             msg.pop("reasoning_content", None)
 
         for turn in range(self.MAX_TOOL_TURNS + 1):
+            if self._stop_streaming:
+                # A new interjection has started; stop processing.
+                break
             reasoning, content, tool_calls, finish_reason = self._stream_response(client, tools, messages)
 
             if reasoning:
