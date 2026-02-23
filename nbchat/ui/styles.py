@@ -127,9 +127,9 @@ def tool_result_html(content: str, tool_name: str = "", preview: str = "", tool_
     if not preview:
         preview = content[:50] + ("..." if len(content) > 50 else "")
     label = f"<b>{html.escape(tool_name)}</b>" if tool_name else "<b>Tool</b>"
-    summary = ''
+    summary = label
     if tool_args:
-        summary += f"{label}|{html.escape(tool_args)}"
+        summary += f"|{html.escape(tool_args)}"
     summary += f"|{html.escape(preview)}"
     inner = (
         f'<details style="margin:0;padding:0;"><summary>{summary}</summary>'

@@ -406,4 +406,25 @@ class ChatUI:
                         entry["function"]["arguments"] += tc.function.arguments
 
         tool_calls = [tool_buffer[i] for i in sorted(tool_buffer)] if tool_buffer else None
+
+        # If there are tool calls, update the assistant widget to include them
+        if tool_calls:
+            if assistant_widget is not None:
+                assistant_widget.value = renderer.render_assistant_with_tools(
+                    content_accum, tool_calls
+                ).value
+            else:
+                # No content widget yet, create one with tool calls
+                assistant_widget = renderer.render_assistant_with_tools("", tool_calls)
+                children = list(self.chat_history.children)
+                if reasoning_widget in children:
+                    children.insert(children.index(reasoning_widget) + 1, assistant_widget)
+                else:
+                    children.append(assistant_widget)
+                self.chat_history.children = children
+        elif assistant_widget is None and content_accum:
+            # No tool calls, but we have content and no widget yet (should not happen)
+            assistant_widget = renderer.render_assistant(content_accum)
+            self._append(assistant_widget)
+
         return reasoning_accum, content_accum, tool_calls, finish_reason
