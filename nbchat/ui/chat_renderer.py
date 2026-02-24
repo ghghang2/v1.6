@@ -32,7 +32,6 @@ __all__ = [
     "render_system",
     "render_placeholder",
     "render_compacted_summary",
-    "render_compacted_summary",
 ]
 
 

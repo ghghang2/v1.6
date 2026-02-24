@@ -1,17 +1,15 @@
 """Token counting and history compaction for managing context size."""
-
 from __future__ import annotations
-
 import threading
-from typing import List, Tuple, Optional
+from typing import List, Tuple
 from nbchat.ui.chat_builder import build_messages
 from nbchat.core.client import get_client
-import concurrent.futures
+
 
 class CompactionEngine:
     """Compacts chat history when token count exceeds threshold."""
-    
-    def __init__(self, threshold: int, tail_messages: int = 5, 
+
+    def __init__(self, threshold: int, tail_messages: int = 5,
                  summary_prompt: str = None, summary_model: str = None,
                  system_prompt: str = ""):
         self.threshold = threshold
@@ -26,52 +24,41 @@ class CompactionEngine:
         )
         self.summary_model = summary_model
         self.system_prompt = system_prompt
-        self._cache = {}  # message hash -> token count
+        self._cache: dict = {}
         self._cache_lock = threading.Lock()
-        self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        self._pending: concurrent.futures.Future | None = None
-    
+
     def _estimate_tokens(self, text: str) -> int:
-        """Simple token estimation: ~4 characters per token."""
         return max(1, len(text) // 4)
-    
+
     def total_tokens(self, history: List[Tuple[str, str, str, str, str]]) -> int:
-        """Calculate total tokens in history with simple caching."""
         total = 0
         for role, content, tool_id, tool_name, tool_args in history:
-            # Create a simple hash for caching (ignore role as it affects tokens minimally)
             msg_hash = hash((content, tool_args))
             with self._cache_lock:
                 if msg_hash in self._cache:
                     total += self._cache[msg_hash]
                     continue
-            
-            # Estimate and cache
             msg_tokens = self._estimate_tokens(content)
             if tool_args:
                 msg_tokens += self._estimate_tokens(tool_args)
-            
             with self._cache_lock:
                 self._cache[msg_hash] = msg_tokens
-                total += msg_tokens
-        
+            total += msg_tokens
         return total
-    
+
     def should_compact(self, history: List[Tuple[str, str, str, str, str]]) -> bool:
-        """Check if history exceeds token threshold."""
         return self.total_tokens(history) >= self.threshold
-    
-    def compact_history(self, history):
+
+    def compact_history(self, history: List[Tuple[str, str, str, str, str]]) -> List[Tuple[str, str, str, str, str]]:
         if len(history) <= self.tail_messages:
             return history
 
         tail_start = len(history) - self.tail_messages
-        # Walk back until we land on a clean turn boundary
         while tail_start > 0 and history[tail_start][0] in ("tool", "analysis", "assistant_full"):
             tail_start -= 1
 
         if tail_start == 0:
-            return history  # can't compact without losing everything
+            return history
 
         older = history[:tail_start]
         tail = history[tail_start:]
@@ -96,5 +83,4 @@ class CompactionEngine:
         return [("compacted", summary_text, "", "", "")] + tail
 
 
-# For convenience
 __all__ = ["CompactionEngine"]

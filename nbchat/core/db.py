@@ -10,17 +10,9 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
-from datetime import datetime
 
 # Location of the database file — one level up from this module
 DB_PATH = Path(__file__).resolve().parent.parent / "chat_history.db"
-
-# Optional in‑memory connection used by tests
-_conn: sqlite3.Connection | None = None
-def _get_conn() -> sqlite3.Connection:
-    if _conn is not None:
-        return _conn
-    return sqlite3.connect(DB_PATH)
 
 # ---------------------------------------------------------------------------
 #  Public helpers
@@ -87,14 +79,15 @@ def log_tool_msg(session_id: str, tool_id: str, tool_name: str, tool_args: str, 
     content
         Result of the tool execution.
     """
+    # Store the tool call in a single row with role ``tool`` and include the
+    # metadata (tool_name and tool_args) so that the UI can render them.
+    # Historically two rows were inserted: one ``assistant`` row with
+    # empty content and a ``tool`` row without the metadata.  This caused
+    # the renderer to miss the tool name and arguments.
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args) VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, 'assistant', '', tool_id, tool_name, tool_args),
-        )
-        conn.execute(
-            "INSERT INTO chat_log (session_id, role, content, tool_id) VALUES (?, ?, ?, ?)",
-            (session_id, 'tool', content, tool_id),
+            (session_id, 'tool', content, tool_id, tool_name, tool_args),
         )
         conn.commit()
 
