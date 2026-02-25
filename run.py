@@ -29,10 +29,10 @@ LLAMA_LOG     = Path("llama_server.log")
 REPO          = "ghghang2/llamacpp_t4_v1"
 # Q4_K_M (~12 GB) fits entirely in T4 VRAM — no CPU offload, maximum TPS.
 # Switch to Q8_0 (~21 GB) only if output quality is insufficient (will require partial CPU offload).
-MODEL         = "unsloth/gpt-oss-20b-GGUF:Q4_K_M"
+MODEL         = "unsloth/gpt-oss-20b-GGUF:Q5_K_M"
 PORT          = 8000
 N_PARALLEL    = 2      # matches 1-2 simultaneous users; fewer slots = faster per-request TPS
-CTX_SIZE      = 8192   # tokens per slot; total KV mem = CTX_SIZE * N_PARALLEL. raise only if prompts need it
+CTX_SIZE      = 16384   # tokens per slot; total KV mem = CTX_SIZE * N_PARALLEL. raise only if prompts need it
 N_GPU_LAYERS  = 999    # offload all layers to GPU (llama.cpp clamps to actual layer count)
 
 
@@ -107,8 +107,11 @@ def main() -> None:
     )
     _run("chmod +x ./llama-server")
 
-    # Start llama-server
-    with LLAMA_LOG.open("w", encoding="utf-8", buffering=1) as log_file:
+    # Start llama-server fully detached — stdin from /dev/null, close_fds=True,
+    # and parent closes its file handle immediately after Popen returns.
+    # This ensures the notebook shell has no open fd tying it to the child process.
+    log_file = LLAMA_LOG.open("w", encoding="utf-8", buffering=1)
+    with open(os.devnull, "r") as devnull:
         llama_proc = subprocess.Popen(
             [
                 "./llama-server",
@@ -119,15 +122,18 @@ def main() -> None:
                 "--n-gpu-layers", str(N_GPU_LAYERS),
                 "--metrics",
             ],
+            stdin=devnull,
             stdout=log_file,
             stderr=subprocess.STDOUT,
             start_new_session=True,
+            close_fds=True,
         )
-        print(f"llama-server started (PID: {llama_proc.pid}) – waiting for health…")
+    log_file.close()  # parent closes its copy; child retains its own fd
 
-        if not _wait_for(f"http://localhost:{PORT}/health"):
-            llama_proc.terminate()
-            sys.exit("[ERROR] llama-server failed to start within timeout")
+    print(f"llama-server started (PID: {llama_proc.pid}) – waiting for health…")
+    if not _wait_for(f"http://localhost:{PORT}/health"):
+        llama_proc.terminate()
+        sys.exit("[ERROR] llama-server failed to start within timeout")
 
     # Install Python dependencies
     print("Installing Python dependencies…")
