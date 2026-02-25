@@ -1,4 +1,32 @@
-"""Token counting and history compaction for managing context size."""
+"""Compaction Engine
+===================
+
+This module implements :class:`~nbchat.compaction.CompactionEngine`, a small
+utility used by the :class:`~nbchat.ui.chat_ui.ChatUI` to keep the number of
+tokens that are sent to the language model under a user defined limit.
+
+The engine is intentionally lightweight – it does not depend on any heavy
+third‑party tokenisation libraries.  Instead, a very small heuristic is used
+(`len(text)//3`) which is sufficient for the Llama‑based models used in the
+project.
+
+The public API of the engine consists of three methods:
+
+``should_compact(history)``
+    Return ``True`` if the estimated number of tokens in *history* exceeds a
+percentage of the configured :py:data:`threshold`.
+
+``compact_history(history)``
+    Replace the older part of *history* with a single *compacted* message that
+contains a summary of the discarded portion.  The method keeps the last
+``tail_messages`` entries untouched.
+
+``total_tokens(history)``
+    Return an approximate token count for *history*.
+
+The implementation is intentionally easy to understand and test – all logic is
+contained inside this module and the class.
+"""
 from __future__ import annotations
 
 import sys
@@ -10,7 +38,26 @@ from nbchat.core.client import get_client
 
 
 class CompactionEngine:
-    """Compacts chat history when token count exceeds threshold."""
+    """A lightweight engine for keeping chat history within token limits.
+
+    Parameters
+    ----------
+    threshold: int
+        The maximum number of tokens that the chat history is allowed to
+        contain before a compaction is triggered.
+    tail_messages: int, default=5
+        Number of the most recent history rows that should be kept verbatim.
+    summary_prompt: str, default=None
+        Prompt that is passed to the summarisation model.  If ``None`` a
+        default prompt that asks for key decisions, file paths, tool calls and
+        next steps is used.
+    summary_model: str, default=None
+        The identifier of the model to use for summarisation.  If ``None`` the
+        model specified in :mod:`nbchat.core.config` is used.
+    system_prompt: str, default=""
+        Optional system prompt that is used when building the message list
+        for the summariser.
+    """
 
     def __init__(self, threshold: int, tail_messages: int = 5,
                  summary_prompt: str = None, summary_model: str = None,
@@ -62,10 +109,11 @@ class CompactionEngine:
         return total
 
     def should_compact(self, history: List[Tuple[str, str, str, str, str]]) -> bool:
+        # Don't compact if the history is already in a compacted state
+        # (starts with a compacted row and is short) — prevents infinite loops.
+        if history and history[0][0] == "compacted" and len(history) <= self.tail_messages + 1:
+            return False
         tokens = self.total_tokens(history)
-        # Fire at 75% of threshold so compaction always has substantial
-        # older content to summarise — avoids the tail consuming everything
-        # by the time the hard limit is reached.
         trigger = int(self.threshold * 0.75)
         print(
             f"[compaction] token estimate: {tokens} / {self.threshold} (trigger={trigger})",

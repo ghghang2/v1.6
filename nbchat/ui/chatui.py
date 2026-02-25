@@ -25,7 +25,7 @@ _tools = tools.get_tools()
 class ChatUI:
     """Chat interface with streaming, reasoning, and safe tool execution."""
 
-    MAX_TOOL_TURNS = 50
+    MAX_TOOL_TURNS = 100
 
     def __init__(self):
         db.init_db()

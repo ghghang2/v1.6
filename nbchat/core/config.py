@@ -59,7 +59,7 @@ IGNORED_ITEMS = [
 # --------------------------------------------------------------------------- #
 #  Context compaction defaults
 # --------------------------------------------------------------------------- #
-CONTEXT_TOKEN_THRESHOLD = 6000
+CONTEXT_TOKEN_THRESHOLD = 10000
 TAIL_MESSAGES = 6
 SUMMARY_PROMPT = (
             "Summarize the conversation history above. Focus on:\n"
