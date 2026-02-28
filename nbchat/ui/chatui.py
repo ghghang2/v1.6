@@ -244,7 +244,7 @@ class ChatUI:
         # use db module directly
         import sys
 
-        
+        self.history = self._sanitize_history(self.history)
 
         try:
             new_history = self.compaction_engine.compact_history(list(self.history))
@@ -316,6 +316,8 @@ class ChatUI:
     # Conversation loop
     # ------------------------------------------------------------------
     def _process_conversation_turn(self):
+
+        self.history = self._sanitize_history(self.history)
 
         messages = chat_builder.build_messages(self.history, self.system_prompt)
         for msg in messages:
