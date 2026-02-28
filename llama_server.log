@@ -3288,3 +3288,68 @@ slot update_slots: id  0 | task 51100 | prompt done, n_tokens = 6448, batch.n_to
 slot init_sampler: id  0 | task 51100 | init sampler, took 1.12 ms, tokens: text = 6448, total = 6448
 slot update_slots: id  0 | task 51100 | erasing old context checkpoint (pos_min = 1666, pos_max = 2433, size = 18.009 MiB)
 slot update_slots: id  0 | task 51100 | created context checkpoint 8 of 8 (pos_min = 5616, pos_max = 6383, size = 18.009 MiB)
+slot print_timing: id  0 | task 51100 | 
+prompt eval time =    1953.15 ms /  1291 tokens (    1.51 ms per token,   660.98 tokens per second)
+       eval time =   77558.62 ms /  2419 tokens (   32.06 ms per token,    31.19 tokens per second)
+      total time =   79511.77 ms /  3710 tokens
+slot      release: id  0 | task 51100 | stop processing: n_tokens = 8866, truncated = 0
+srv  update_slots: all slots are idle
+srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 200
+srv  params_from_: Chat format: GPT-OSS
+slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 6860309882
+srv  get_availabl: updating prompt cache
+srv   prompt_save:  - saving prompt with length 8866, total state size = 225.908 MiB
+srv          load:  - looking for better prompt, base f_keep = 0.007, sim = 0.015
+srv        update:  - cache state: 16 prompts, 5442.506 MiB (limits: 8192.000 MiB, 40192 tokens, 252146 est)
+srv        update:    - prompt 0x59729844bc90:   13521 tokens, checkpoints:  8,   478.479 MiB
+srv        update:    - prompt 0x59729716e1c0:   12204 tokens, checkpoints:  1,   322.189 MiB
+srv        update:    - prompt 0x59729844baa0:   10958 tokens, checkpoints:  8,   417.887 MiB
+srv        update:    - prompt 0x597299082d10:   10480 tokens, checkpoints:  1,   281.763 MiB
+srv        update:    - prompt 0x59729b4ac4d0:    5830 tokens, checkpoints:  5,   241.268 MiB
+srv        update:    - prompt 0x597298341840:    9790 tokens, checkpoints:  5,   334.548 MiB
+srv        update:    - prompt 0x5972971d9590:    6089 tokens, checkpoints:  2,   194.393 MiB
+srv        update:    - prompt 0x59729921c810:    6386 tokens, checkpoints:  3,   219.366 MiB
+srv        update:    - prompt 0x59729e4b9300:    6026 tokens, checkpoints:  2,   192.916 MiB
+srv        update:    - prompt 0x59729721bfc0:    8368 tokens, checkpoints:  8,   357.529 MiB
+srv        update:    - prompt 0x5972a2bc32a0:   39462 tokens, checkpoints:  1,   961.361 MiB
+srv        update:    - prompt 0x597299270410:    2048 tokens, checkpoints:  0,    66.033 MiB
+srv        update:    - prompt 0x59729817f9a0:    7987 tokens, checkpoints:  8,   349.369 MiB
+srv        update:    - prompt 0x5972a2bd71a0:    6821 tokens, checkpoints:  1,   195.964 MiB
+srv        update:    - prompt 0x5972911f8e70:   12682 tokens, checkpoints:  8,   459.462 MiB
+srv        update:    - prompt 0x59729d140db0:    8866 tokens, checkpoints:  8,   369.980 MiB
+srv  get_availabl: prompt cache update took 293.35 ms
+slot launch_slot_: id  0 | task -1 | sampler chain: logits -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> min-p -> ?xtc -> temp-ext -> dist 
+slot launch_slot_: id  0 | task 53521 | processing task, is_child = 0
+slot update_slots: id  0 | task 53521 | new prompt, n_ctx_slot = 40192, n_keep = 0, task.n_tokens = 3957
+slot update_slots: id  0 | task 53521 | n_past = 59, slot.prompt.tokens.size() = 8866, seq_id = 0, pos_min = 8098, n_swa = 128
+slot update_slots: id  0 | task 53521 | forcing full prompt re-processing due to lack of cache data (likely due to SWA or hybrid/recurrent memory, see https://github.com/ggml-org/llama.cpp/pull/13194#issuecomment-2868343055)
+slot update_slots: id  0 | task 53521 | erased invalidated context checkpoint (pos_min = 2125, pos_max = 2892, n_swa = 128, size = 18.009 MiB)
+slot update_slots: id  0 | task 53521 | erased invalidated context checkpoint (pos_min = 2434, pos_max = 3201, n_swa = 128, size = 18.009 MiB)
+slot update_slots: id  0 | task 53521 | erased invalidated context checkpoint (pos_min = 2768, pos_max = 3535, n_swa = 128, size = 18.009 MiB)
+slot update_slots: id  0 | task 53521 | erased invalidated context checkpoint (pos_min = 3205, pos_max = 3972, n_swa = 128, size = 18.009 MiB)
+slot update_slots: id  0 | task 53521 | erased invalidated context checkpoint (pos_min = 3492, pos_max = 4259, n_swa = 128, size = 18.009 MiB)
+slot update_slots: id  0 | task 53521 | erased invalidated context checkpoint (pos_min = 3811, pos_max = 4578, n_swa = 128, size = 18.009 MiB)
+slot update_slots: id  0 | task 53521 | erased invalidated context checkpoint (pos_min = 4260, pos_max = 5027, n_swa = 128, size = 18.009 MiB)
+slot update_slots: id  0 | task 53521 | erased invalidated context checkpoint (pos_min = 5616, pos_max = 6383, n_swa = 128, size = 18.009 MiB)
+slot update_slots: id  0 | task 53521 | n_tokens = 0, memory_seq_rm [0, end)
+slot update_slots: id  0 | task 53521 | prompt processing progress, n_tokens = 2048, batch.n_tokens = 2048, progress = 0.517564
+slot update_slots: id  0 | task 53521 | n_tokens = 2048, memory_seq_rm [2048, end)
+slot update_slots: id  0 | task 53521 | prompt processing progress, n_tokens = 3893, batch.n_tokens = 1845, progress = 0.983826
+slot update_slots: id  0 | task 53521 | n_tokens = 3893, memory_seq_rm [3893, end)
+slot update_slots: id  0 | task 53521 | prompt processing progress, n_tokens = 3957, batch.n_tokens = 64, progress = 1.000000
+slot update_slots: id  0 | task 53521 | prompt done, n_tokens = 3957, batch.n_tokens = 64
+slot init_sampler: id  0 | task 53521 | init sampler, took 0.57 ms, tokens: text = 3957, total = 3957
+slot update_slots: id  0 | task 53521 | created context checkpoint 1 of 8 (pos_min = 3125, pos_max = 3892, size = 18.009 MiB)
+slot print_timing: id  0 | task 53521 | 
+prompt eval time =    4853.26 ms /  3957 tokens (    1.23 ms per token,   815.33 tokens per second)
+       eval time =   24713.70 ms /   755 tokens (   32.73 ms per token,    30.55 tokens per second)
+      total time =   29566.96 ms /  4712 tokens
+slot      release: id  0 | task 53521 | stop processing: n_tokens = 4711, truncated = 0
+srv  update_slots: all slots are idle
+srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 200
+srv    operator(): got exception: {"error":{"code":500,"message":"\n------------\nWhile executing CallExpression at line 328, column 32 in source:\n... none %}↵            {{- raise_exception(\"Message has tool role, but there was n...\n                                           ^\nError: Jinja Exception: Message has tool role, but there was no previous assistant message with a tool call!","type":"server_error"}}
+srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 500
+srv    operator(): got exception: {"error":{"code":500,"message":"\n------------\nWhile executing CallExpression at line 328, column 32 in source:\n... none %}↵            {{- raise_exception(\"Message has tool role, but there was n...\n                                           ^\nError: Jinja Exception: Message has tool role, but there was no previous assistant message with a tool call!","type":"server_error"}}
+srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 500
+srv    operator(): got exception: {"error":{"code":500,"message":"\n------------\nWhile executing CallExpression at line 328, column 32 in source:\n... none %}↵            {{- raise_exception(\"Message has tool role, but there was n...\n                                           ^\nError: Jinja Exception: Message has tool role, but there was no previous assistant message with a tool call!","type":"server_error"}}
+srv  log_server_r: request: POST /v1/chat/completions 127.0.0.1 500

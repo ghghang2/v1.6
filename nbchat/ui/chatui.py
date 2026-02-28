@@ -204,6 +204,27 @@ class ChatUI:
 
     def _append(self, widget: widgets.HTML):
         self.chat_history.children = list(self.chat_history.children) + [widget]
+    
+    def _sanitize_history(self, history):
+        """Remove orphaned tool/analysis rows that have no preceding assistant_full."""
+        sanitized = []
+        for i, row in enumerate(history):
+            role = row[0]
+            if role == "tool":
+                # Only keep if preceded by assistant_full
+                if sanitized and sanitized[-1][0] == "assistant_full":
+                    sanitized.append(row)
+                else:
+                    print(f"[compaction] dropping orphaned tool row at {i}", file=sys.stderr)
+            elif role == "analysis":
+                # Only keep if followed by assistant_full (peek ahead)
+                if i + 1 < len(history) and history[i + 1][0] == "assistant_full":
+                    sanitized.append(row)
+                else:
+                    print(f"[compaction] dropping orphaned analysis row at {i}", file=sys.stderr)
+            else:
+                sanitized.append(row)
+        return sanitized
 
     # ------------------------------------------------------------------
     # Compaction — synchronous, runs inside the stream thread
@@ -222,6 +243,8 @@ class ChatUI:
 
         # use db module directly
         import sys
+
+        
 
         try:
             new_history = self.compaction_engine.compact_history(list(self.history))
