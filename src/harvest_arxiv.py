@@ -48,8 +48,13 @@ def harvest_arxiv(url_or_id: str) -> dict:
     if not feed.entries:
         raise RuntimeError(f"No entry found for arXiv ID {paper_id}")
     entry = feed.entries[0]
-    authors = ", ".join([a.name for a in entry.authors]) if hasattr(entry, "authors") else ""
-    pdf_url = next((link.href for link in entry.links if link.type == "application/pdf"), "")
+    # ``feedparser`` returns ``entry.authors`` as a list of dicts with a ``name`` key.
+    if hasattr(entry, "authors"):
+        authors = ", ".join([a.get("name", "") for a in entry.authors])
+    else:
+        authors = ""
+    # ``entry.links`` is a list of dicts; filter for PDF type.
+    pdf_url = next((link.get("href", "") for link in entry.links if link.get("type") == "application/pdf"), "")
     return {
         "id": paper_id,
         "title": entry.title,
