@@ -19,7 +19,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-import psutil
+try:
+    import psutil
+except ImportError:  # pragma: no cover - fallback when psutil is missing
+    psutil = None
 
 # --------------------------------------------------------------------------- #
 #  Constants
@@ -78,6 +81,9 @@ def _load_service_info() -> dict:
 
 def _kill_pid(name: str, pid: int) -> None:
     """Gracefully terminate a process and its children."""
+    if psutil is None:
+        print(f"psutil not available – cannot gracefully terminate {name} (PID {pid})")
+        return
     try:
         proc = psutil.Process(pid)
         for child in proc.children(recursive=True):

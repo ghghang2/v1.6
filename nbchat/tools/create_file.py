@@ -38,9 +38,16 @@ def _safe_resolve(repo_root: Path, rel_path: str) -> Path:
     Resolve ``rel_path`` against ``repo_root`` and ensure the result
     does **not** escape the repository root (prevents directory traversal).
     """
+    # Resolve the target path and ensure it stays within the repository
     target = (repo_root / rel_path).resolve()
-    if not str(target).startswith(str(repo_root)):
-        raise ValueError("Path escapes repository root")
+    try:
+        # Path.is_relative_to is available on Python 3.9+
+        if not target.is_relative_to(repo_root):
+            raise ValueError("Path escapes repository root")
+    except AttributeError:
+        # Fallback for older Python versions
+        if not str(target).startswith(str(repo_root)):
+            raise ValueError("Path escapes repository root")
     return target
 
 
