@@ -66,4 +66,3 @@ if __name__ == "__main__":
     q = " ".join(sys.argv[1:])
     meta = harvest_gitlab(q)
     print(json.dumps(meta, indent=2))
-"""

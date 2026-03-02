@@ -73,4 +73,3 @@ if __name__ == "__main__":
     meta = harvest_arxiv(sys.argv[1])
     import json
     print(json.dumps(meta, indent=2))
-"""
