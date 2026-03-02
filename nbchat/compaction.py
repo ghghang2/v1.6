@@ -166,6 +166,24 @@ class CompactionEngine:
                 return i
         return None
 
+    @staticmethod
+    def _safe_tail(history: List[_Row], n: int) -> List[_Row]:
+        """Return the last *n* rows of *history*, nudging the start forward
+        past any dependent roles so the tail is always structurally valid.
+
+        This is the single authoritative place that computes a safe tail
+        slice — every code path that needs to return a partial history must
+        go through here.
+        """
+        if not history or n <= 0:
+            return []
+        tail_start = max(0, len(history) - n)
+        # Nudge forward until we land on a role that can legally open a
+        # message sequence (i.e. is not a structural dependent).
+        while tail_start < len(history) and history[tail_start][0] in _DEPENDENT_ROLES:
+            tail_start += 1
+        return history[tail_start:]
+
     # ------------------------------------------------------------------
     # Core compaction
     # ------------------------------------------------------------------
@@ -221,21 +239,19 @@ class CompactionEngine:
                         file=sys.stderr,
                     )
                 else:
-                    # No safe split – summarise the *entire* history.
+                    # Absolute last resort: no turn boundaries and no safe
+                    # intra-turn split exist.  Summarise the entire history
+                    # and keep only a structurally safe tail.
                     print(
                         "[compaction] cannot split last remaining turn,"
-                        " summarising entire history instead of aborting",
+                        " summarising entire history",
                         file=sys.stderr,
                     )
-                    # Summarise all rows.
                     self.context_summary = self._call_summariser(history)
-                    # Keep only the tail rows verbatim (if any).  This mimics
-                    # the behaviour of the original algorithm where tail
-                    # rows are never dropped.
-                    if self.tail_messages:
-                        return history[-self.tail_messages:]
-                    else:
-                        return []
+                    tail = self._safe_tail(history, self.tail_messages)
+                    with self._cache_lock:
+                        self._cache.clear()
+                    return tail
                 break
 
             # If the candidate turn alone exceeds the threshold, split it
