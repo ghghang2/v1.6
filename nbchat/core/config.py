@@ -80,7 +80,7 @@ IGNORED_ITEMS = [
 # --------------------------------------------------------------------------- #
 #  Context compaction defaults
 # --------------------------------------------------------------------------- #
-CONTEXT_TOKEN_THRESHOLD = 65536
+CONTEXT_TOKEN_THRESHOLD = 32768
 TAIL_MESSAGES = 4
 SUMMARY_PROMPT = (
             "As the helpful assistant, I need to summarize the conversation history thus far in a more compact form for use as context later. I have to:\n"
