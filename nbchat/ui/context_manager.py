@@ -30,24 +30,31 @@ class ContextMixin:
         Limits by WINDOW_TURNS user turns AND by MAX_WINDOW_ROWS to
         prevent massive rebuilds when a single turn had many exchanges.
         Always starts on a user row.
+        Falls back to full history if fewer than WINDOW_TURNS user messages exist.
         """
         MAX_WINDOW_ROWS = 30  # hard row cap regardless of turn count
+
+        # Walk backward counting user rows to find the cut point.
         user_count = 0
-        cut = len(self.history)
+        cut = 0  # default: include everything
         for i in range(len(self.history) - 1, -1, -1):
             if self.history[i][0] == "user":
                 user_count += 1
                 if user_count == self.WINDOW_TURNS:
                     cut = i
                     break
+        # cut=0 means fewer than WINDOW_TURNS user messages — use all history.
+
         window = list(self.history[cut:])
-        # Apply hard row cap — keep the tail.
+
+        # Apply hard row cap from the tail, snapping to nearest user row.
         if len(window) > MAX_WINDOW_ROWS:
-            # Snap to nearest user row after the cap boundary.
             start = len(window) - MAX_WINDOW_ROWS
             while start < len(window) and window[start][0] != "user":
                 start += 1
-            window = window[start:]
+            if start < len(window):
+                window = window[start:]
+
         return window
 
     # ------------------------------------------------------------------
