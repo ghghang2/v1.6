@@ -87,6 +87,8 @@ USER_NAME = _cfg.get("user_name", "ghghang2")
 REPO_NAME = _cfg.get("repo_name", "v1.4")
 CONTEXT_TOKEN_THRESHOLD = int(_cfg.get("context_len", 16384))
 TAIL_MESSAGES = int(_cfg.get("tail_len", 2))
+MAX_TOOL_OUTPUT_CHARS = 3000   # chars kept per tool result (3k head + 3k tail)
+MAX_HISTORY_TURNS = 10         # user turns sent to model (full history still saved to DB)
 
 # --------------------------------------------------------------------------- #
 #  Items to ignore in the repo

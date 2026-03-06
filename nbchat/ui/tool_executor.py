@@ -1,10 +1,4 @@
-"""Single executor for all tool calls.
-
-The legacy implementation created a new ``ThreadPoolExecutor`` for
-every tool invocation.  This is wasteful and can lead to thread
-leaks.  A global executor is now used, reusing the same pool.
-"""
-
+"""Single executor for all tool calls."""
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
@@ -13,23 +7,31 @@ import json
 
 from nbchat.tools import TOOLS
 
-# Create a single executor with a modest pool size.
 _executor = ThreadPoolExecutor(max_workers=4)
 
-def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
-    """Execute a tool with arguments and return the string result.
+MAX_TOOL_OUTPUT_CHARS = 6000
 
-    Parameters
-    ----------
-    tool_name:
-        Name of the tool to execute.
-    args_json:
-        JSON string containing the arguments for the tool.
-    timeout:
-        Optional timeout in seconds.  If ``None`` a default of 60 seconds
-        is used for ``browser`` and ``run_tests`` tools, otherwise 30.
+
+def trim_tool_output(result: str, max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> str:
+    """Trim large tool outputs to keep them within context budget.
+
+    Keeps the first and last halves of the output so both the beginning
+    (often the most structured part) and the end (often the result) are
+    preserved.
     """
+    if len(result) <= max_chars:
+        return result
+    half = max_chars // 2
+    removed = len(result) - max_chars
+    return (
+        result[:half]
+        + f"\n[...{removed} chars trimmed — output too large for context window...]\n"
+        + result[-half:]
+    )
 
+
+def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
+    """Execute a tool with arguments and return the (trimmed) string result."""
     try:
         args = json.loads(args_json)
     except Exception as e:
@@ -45,23 +47,11 @@ def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
     future = _executor.submit(func, **args)
     try:
         result = future.result(timeout=timeout)
-        return str(result)
+        return trim_tool_output(str(result))
     except TimeoutError:
         return f"⏰ Tool '{tool_name}' timed out after {timeout} seconds."
     except Exception as e:
         return f"❌ Tool execution error: {e}"
 
-MAX_TOOL_OUTPUT_CHARS = 3000
 
-def trim_tool_output(result: str, max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> str:
-    if len(result) <= max_chars:
-        return result
-    half = max_chars // 2
-    removed = len(result) - max_chars
-    return (
-        result[:half]
-        + f"\n[...{removed} chars trimmed — output too large...]\n"
-        + result[-half:]
-    )
-
-__all__ = ["run_tool"]
+__all__ = ["run_tool", "trim_tool_output"]

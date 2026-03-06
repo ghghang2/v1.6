@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipywidgets as widgets
 import json
-import logging
 import re
 import threading
 import time
@@ -15,11 +14,8 @@ from IPython.display import display
 from nbchat.ui import chat_renderer as renderer
 from nbchat.ui import tool_executor as executor
 from nbchat.ui import chat_builder
-from nbchat.core import compaction
 from nbchat.ui.utils import changed_files
 from nbchat.core.utils import lazy_import
-
-_log = logging.getLogger("nbchat.compaction")
 
 
 class ChatUI:
@@ -34,14 +30,10 @@ class ChatUI:
         config = lazy_import("nbchat.core.config")
         self.system_prompt = config.DEFAULT_SYSTEM_PROMPT
         self.model_name = config.MODEL_NAME
-        self.compaction_engine = compaction.CompactionEngine(
-            threshold=config.CONTEXT_TOKEN_THRESHOLD,
-            tail_messages=config.TAIL_MESSAGES,
-            summary_prompt=config.SUMMARY_PROMPT,
-            summary_model=config.MODEL_NAME,
-            system_prompt=self.system_prompt,
-        )
+        self.max_history_turns = config.MAX_HISTORY_TURNS
+
         self.session_id = str(uuid.uuid4())
+        # (role, content, tool_id, tool_name, tool_args)
         self.history: List[Tuple[str, str, str, str, str]] = []
         self._stop_streaming = False
         self._stream_thread = None
@@ -73,8 +65,10 @@ class ChatUI:
         options = list(db.get_session_ids())
         if self.session_id not in options:
             options.append(self.session_id)
-        self.session_dropdown = widgets.Dropdown(options=options, value=self.session_id,
-                                                  layout=widgets.Layout(width="100%"))
+        self.session_dropdown = widgets.Dropdown(
+            options=options, value=self.session_id,
+            layout=widgets.Layout(width="100%"),
+        )
         self.session_dropdown.observe(self._on_session_change, names="value")
 
         sidebar = widgets.VBox([
@@ -136,7 +130,10 @@ class ChatUI:
                         tps = 0.0
                         for line in reversed(lines):
                             if "eval time" in line.lower():
-                                m = re.search(r"(?P<value>\d+(?:\.\d+)?)\s+tokens per second", line, re.IGNORECASE)
+                                m = re.search(
+                                    r"(?P<value>\d+(?:\.\d+)?)\s+tokens per second",
+                                    line, re.IGNORECASE,
+                                )
                                 if m:
                                     tps = float(m.group("value"))
                                     break
@@ -167,15 +164,10 @@ class ChatUI:
     def _load_history(self):
         db = lazy_import("nbchat.core.db")
         self.history = db.load_history(self.session_id)
-        self.compaction_engine.context_summary = db.load_context_summary(self.session_id)
         self._render_history()
 
     def _render_history(self):
         children = []
-        if self.compaction_engine.context_summary:
-            children.append(
-                renderer.render_compacted_summary(self.compaction_engine.context_summary)
-            )
         for role, content, tool_id, tool_name, tool_args in self.history:
             if role == "user":
                 children.append(renderer.render_user(content))
@@ -197,8 +189,6 @@ class ChatUI:
                 children.append(renderer.render_tool(content, tool_name, tool_args))
             elif role == "system":
                 children.append(renderer.render_system(content))
-            elif role == "compacted":
-                children.append(renderer.render_compacted_summary(content))
         self.chat_history.children = children
 
     def _widget_for_assistant(self, content: str, tool_id: str, tool_args: str) -> widgets.HTML:
@@ -213,68 +203,26 @@ class ChatUI:
         self.chat_history.children = list(self.chat_history.children) + [widget]
 
     # ------------------------------------------------------------------
-    # Compaction
+    # Sliding window — limits what is sent to the model
     # ------------------------------------------------------------------
-    def _build_messages(self) -> list:
-        messages = chat_builder.build_messages(
-            self.history,
-            self.system_prompt,
-            context_summary=self.compaction_engine.context_summary,
-        )
-        for msg in messages:
-            msg.pop("reasoning_content", None)
-        return messages
+    def _window(self) -> List[Tuple[str, str, str, str, str]]:
+        """Return the last ``max_history_turns`` user turns from history.
 
-    def _compact_now(self, messages: list) -> bool:
-        if not self.compaction_engine.should_compact(self.history):
-            return False
+        self.history grows unbounded (full DB log, full UI display).
+        Only this trimmed window is ever sent to the model.
+        Walks backward counting ``user`` rows; the returned slice always
+        starts on a ``user`` row so message ordering is never broken.
+        """
+        if self.max_history_turns <= 0:
+            return list(self.history)
 
-        db = lazy_import("nbchat.core.db")
-
-        _log.debug(
-            f"_compact_now: before: history={len(self.history)} rows, "
-            f"context_summary={len(self.compaction_engine.context_summary)} chars"
-        )
-
-        try:
-            new_history = self.compaction_engine.compact_history(list(self.history))
-        except Exception as e:
-            # Log to compaction.log — exceptions here are invisible in Jupyter
-            # stderr since this runs in a daemon thread.
-            _log.debug(
-                f"compact_history raised {type(e).__name__}: {e}",
-                exc_info=True,
-            )
-            # Summarisation failed — still truncate to tail so we don't keep
-            # growing past the context limit.
-            new_history = self.compaction_engine._safe_tail(
-                list(self.history), self.compaction_engine.tail_messages
-            )
-            self.compaction_engine.context_summary = (
-                (self.compaction_engine.context_summary + "\n"
-                 if self.compaction_engine.context_summary else "") +
-                "[Summarisation failed — earlier context was dropped.]"
-            ).strip()
-
-        _log.debug(
-            f"_compact_now: after: history={len(new_history)} rows, "
-            f"context_summary={len(self.compaction_engine.context_summary)} chars"
-        )
-
-        self.history = new_history
-        db.replace_session_history(self.session_id, new_history)
-
-        summary = self.compaction_engine.context_summary
-        if summary:
-            db.save_context_summary(self.session_id, summary)
-
-        messages.clear()
-        messages.extend(self._build_messages())
-
-        if summary:
-            self._append(renderer.render_compacted_summary(summary))
-
-        return True
+        user_count = 0
+        for i in range(len(self.history) - 1, -1, -1):
+            if self.history[i][0] == "user":
+                user_count += 1
+                if user_count == self.max_history_turns:
+                    return list(self.history[i:])
+        return list(self.history)
 
     # ------------------------------------------------------------------
     # Event handlers
@@ -283,7 +231,6 @@ class ChatUI:
         db = lazy_import("nbchat.core.db")
         self.session_id = str(uuid.uuid4())
         self.history = []
-        self.compaction_engine.context_summary = ""
         options = list(db.get_session_ids())
         if self.session_id not in options:
             options.append(self.session_id)
@@ -327,7 +274,10 @@ class ChatUI:
         tools  = lazy_import("nbchat.tools")
         db     = lazy_import("nbchat.core.db")
 
-        messages = self._build_messages()
+        # Build messages from the sliding window only — never the full history.
+        messages = chat_builder.build_messages(self._window(), self.system_prompt)
+        for msg in messages:
+            msg.pop("reasoning_content", None)
 
         for turn in range(self.MAX_TOOL_TURNS + 1):
             if self._stop_streaming:
@@ -345,7 +295,6 @@ class ChatUI:
                 if content:
                     self.history.append(("assistant", content, "", "", ""))
                     db.log_message(self.session_id, "assistant", content)
-                self._compact_now(messages)
                 break
 
             if turn == self.MAX_TOOL_TURNS:
@@ -355,6 +304,7 @@ class ChatUI:
                 db.log_message(self.session_id, "assistant", warning)
                 break
 
+            # --- tool-calling turn ---
             full_msg = {
                 "role": "assistant",
                 "content": content,
@@ -370,8 +320,10 @@ class ChatUI:
             for tc in tool_calls:
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
+
+                # Trim happens inside run_tool — trimmed result goes everywhere
+                # consistently: messages, self.history, DB, and UI.
                 result = executor.run_tool(tool_name, tool_args)
-                result = executor.trim_tool_output(result)
 
                 self.history.append(("tool", result, tc["id"], tool_name, tool_args))
                 db.log_tool_msg(self.session_id, tc["id"], tool_name, tool_args, result)
@@ -379,8 +331,6 @@ class ChatUI:
                     {"role": "tool", "tool_call_id": tc["id"], "content": result}
                 )
                 self._append(renderer.render_tool(result, tool_name, tool_args))
-
-            self._compact_now(messages)
 
     # ------------------------------------------------------------------
     # Streaming
