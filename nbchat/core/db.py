@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+import json
 
 DB_PATH = Path(__file__).resolve().parent.parent / "chat_history.db"
 
@@ -188,3 +189,35 @@ def load_context_summary(session_id: str) -> str:
         )
         row = cur.fetchone()
         return row[0] if row and row[0] else ""
+
+def save_task_log(session_id: str, task_log: list) -> None:
+    """Persist the task log for a session."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS task_log (
+                session_id TEXT PRIMARY KEY,
+                entries    TEXT NOT NULL,
+                ts         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+            """
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO task_log (session_id, entries) VALUES (?, ?)",
+            (session_id, json.dumps(task_log)),
+        )
+        conn.commit()
+
+
+def load_task_log(session_id: str) -> list:
+    """Return the persisted task log for session_id, or empty list."""
+    with sqlite3.connect(DB_PATH) as conn:
+        try:
+            cur = conn.execute(
+                "SELECT entries FROM task_log WHERE session_id = ?",
+                (session_id,),
+            )
+            row = cur.fetchone()
+            return json.loads(row[0]) if row else []
+        except sqlite3.OperationalError:
+            return []

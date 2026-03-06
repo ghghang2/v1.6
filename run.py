@@ -29,16 +29,17 @@ except ImportError:  # pragma: no cover - fallback when psutil is missing
 # --------------------------------------------------------------------------- #
 from nbchat.core import config
 
-SERVICE_INFO  = Path("service_info.json")
-LLAMA_LOG     = Path("llama_server.log")
+# Paths and repository identifiers are now read from the configuration file.
+SERVICE_INFO  = Path(config.SERVICE_INFO_PATH)
+LLAMA_LOG     = Path(config.LLAMA_LOG_PATH)
 REPO          = f"{config.USER_NAME}/{config.REPO_NAME}"
 # Q4_K_M (~12 GB) fits entirely in T4 VRAM — no CPU offload, maximum TPS.
 # Switch to Q8_0 (~21 GB) only if output quality is insufficient (will require partial CPU offload).
 MODEL         = config.MODEL_NAME
-PORT          = 8000
-N_PARALLEL    = 1      # matches 1-2 simultaneous users; fewer slots = faster per-request TPS
-CTX_SIZE      = 16384  # tokens per slot; total KV mem ≈ CTX_SIZE * N_PARALLEL * layers. 32K fits within T4 headroom at Q4_K_M + N_PARALLEL=2
-N_GPU_LAYERS  = 999    # offload all layers to GPU (llama.cpp clamps to actual layer count)
+PORT          = config.PORT
+N_PARALLEL    = config.N_PARALLEL  # matches 1-2 simultaneous users; fewer slots = faster per-request TPS
+CTX_SIZE      = config.CTX_SIZE  # tokens per slot; total KV mem ≈ CTX_SIZE * N_PARALLEL * layers. 32K fits within T4 headroom at Q4_K_M + N_PARALLEL=2
+N_GPU_LAYERS  = config.N_GPU_LAYERS  # offload all layers to GPU (llama.cpp clamps to actual layer count)
 
 
 # --------------------------------------------------------------------------- #

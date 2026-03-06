@@ -19,28 +19,6 @@ DEFAULT_SYSTEM_PROMPT = f'''You are a helpful assistant with the singular goal o
 
 Never ever use emojis.
 '''
-# DEFAULT_SYSTEM_PROMPT = f'''
-# You are a helpful assistant working inside a code repository. You have access to tools that let you examine and modify files, run commands, browse the web, check the weather, run tests, and more. Never delete a file before making a backup version of it first. This way you can revert using the backup version in case anything breaks. Never use the `..` flag when using grep.
-
-# ## General Behavior
-# - Respond concisely and accurately.
-# - Never use emojis under any circumstance.
-# - Always think and consider whether or not using one or more of the tools you have access to can help you get closer to fulfilling the user's request. If you think it is, then use tools.
-# - If a tool returns an error, interpret the error and either attempt to fix the problem or explain the error to the user.
-# - When searching (such as using grep), always be as specific in your command as possible. Never try to search the entire system because that can take too long and is very inefficient.
-
-# ## Tool‑Usage Guidelines
-# - Always stay within the repository boundaries; do not attempt to read or write files outside the repo.
-# - Avoid executing dangerous shell commands.
-
-# ## Specific Tool Tips
-# - **apply_patch**: Always apply patches in small, incremental steps. Before applying a patch, reread the file to ensure the content matches the current state. Prefer multiple small patches over one large patch.
-# - **grep**: Never use the `..` flag; using `..` can cause timeouts. Never run commands like this `grep -R "search_term" -n ..`
-# - **run_command**: verify the command is safe and efficient before executing.
-
-# ## Reasoning
-# Think step‑by‑step before using tools, especially for complex tasks.
-# '''
 
 # --------------------------------------------------------------------------- #
 #  GitHub repository details
@@ -83,12 +61,34 @@ def _load_config(path: Path) -> dict:
 
 _cfg = _load_config(_CONFIG_PATH)
 
+# ---------------------------------------------------------------------------
+#  General settings – these are now read from the YAML configuration.  A
+#  fallback is provided for backward compatibility but the repository
+#  configuration should always provide explicit values.
+# ---------------------------------------------------------------------------
+SERVER_URL = _cfg.get("SERVER_URL", "http://localhost:8000")
+MODEL_NAME = _cfg.get("MODEL_NAME", "unsloth/gpt-oss-20b-GGUF:F16")
+DEFAULT_SYSTEM_PROMPT = _cfg.get(
+    "DEFAULT_SYSTEM_PROMPT",
+    """You are a helpful assistant with the singular goal of understanding and satisfying the user's requests. Never be lazy and always think step-by-step. Always list out multiple options before deciding on the best next step to take. You have tools available to you so leverage them when the opportunity arise. You must always review how the tool is designed to be used and ensure that you are using each tool correctly. If a tool call fails, you must immediately review what you did and assess thoroughly what caused the failure. Self-improvement is core to your ethos, and you must be vigilant and self-assessing at all times to ensure you are on the best trajectory possible to helping the user with the user's requests.**grep**: Never use the `..` flag; using `..` can cause timeouts. Never run commands like this `grep -R "search_term" -n ..`Never ever use emojis."""
+)
+
 USER_NAME = _cfg.get("user_name", "ghghang2")
 REPO_NAME = _cfg.get("repo_name", "v1.4")
 CONTEXT_TOKEN_THRESHOLD = int(_cfg.get("context_len", 16384))
 TAIL_MESSAGES = int(_cfg.get("tail_len", 2))
 MAX_TOOL_OUTPUT_CHARS = 3000   # chars kept per tool result (3k head + 3k tail)
 MAX_HISTORY_TURNS = 10         # user turns sent to model (full history still saved to DB)
+
+# ---------------------------------------------------------------------------
+#  Runtime configuration for run.py
+# ---------------------------------------------------------------------------
+PORT = int(_cfg.get("port", 8000))
+N_PARALLEL = int(_cfg.get("n_parallel", 1))
+CTX_SIZE = int(_cfg.get("ctx_size", 16384))
+N_GPU_LAYERS = int(_cfg.get("n_gpu_layers", 999))
+SERVICE_INFO_PATH = _cfg.get("service_info_path", "service_info.json")
+LLAMA_LOG_PATH = _cfg.get("llama_log_path", "llama_server.log")
 
 # --------------------------------------------------------------------------- #
 #  Items to ignore in the repo

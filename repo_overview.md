@@ -1,6 +1,7 @@
 | Relative path | Function | Description |
 |---------------|----------|-------------|
 | nbchat/core/client.py | get_client | Return a client that talks to the local OpenAI‑compatible server. |
+| nbchat/core/compressor.py | compress_tool_output | Return a compressed version of *result*.  If the output is short enough it is returned unchanged. Otherwise an LLM call extracts only the relevant information. If the output contains nothing relevant the sentinel string ``NO_RELEVANT_OUTPUT`` is returned so the caller can decide whether to store a placeholder or drop the row. |
 | nbchat/core/config.py | _load_config | Load the YAML configuration file.  Parameters ---------- path: Path     Path to the YAML file.  Returns ------- dict     Parsed configuration or an empty dict on failure. |
 | nbchat/core/db.py | init_db | Create the database and tables if they do not exist.  Idempotent — safe to call on every application startup. |
 | nbchat/core/db.py | log_message | Persist a single chat line (user or assistant text). |
@@ -10,6 +11,8 @@
 | nbchat/core/db.py | replace_session_history | Atomically replace all chat_log rows for *session_id*.  Used by the compaction engine after it trims older turns.  The context summary is stored separately via ``save_context_summary`` and is therefore unaffected by this call. |
 | nbchat/core/db.py | save_context_summary | Upsert the rolling context summary for *session_id*.  There is at most one summary row per session; this replaces any previously stored value. |
 | nbchat/core/db.py | load_context_summary | Return the stored context summary for *session_id*, or ``""``. |
+| nbchat/core/db.py | save_task_log | Persist the task log for a session. |
+| nbchat/core/db.py | load_task_log | Return the persisted task log for session_id, or empty list. |
 | nbchat/core/remote.py | _token | Return the GitHub PAT from the environment. |
 | nbchat/core/remote.py | _remote_url | Return an HTTPS URL that contains the PAT.  Parameters ---------- repo_name:     The repository name to use in the URL.  If ``None`` the default     :data:`~nbchat.core.config.REPO_NAME` is used. |
 | nbchat/core/utils.py | lazy_import | Import a module only when needed.  The function mirrors the behaviour of the legacy ``lazy_import``. |
@@ -46,7 +49,7 @@
 | nbchat/tools/run_command.py | _run_command | Execute ``command`` in the repository root and return a JSON string with:     * ``stdout``     * ``stderr``     * ``exit_code`` Any exception is converted to an error JSON.  The ``cwd`` argument is accepted for backward compatibility but ignored; the command is always executed in the repository root. |
 | nbchat/tools/run_tests.py | _run_tests | Execute `pytest -q` in the repository root and return JSON. |
 | nbchat/tools/send_email.py | _send_email | Send an email via Gmail.  Parameters ---------- subject: str     Subject line of the email. body: str     Plain‑text body of the email.  Returns ------- str     JSON string containing either ``result`` or ``error``. |
-| nbchat/ui/chat_builder.py | build_messages | Build OpenAI messages from internal chat history.  Parameters ---------- history:     List of tuples ``(role, content, tool_id, tool_name, tool_args)``. system_prompt:     The system message to prepend. context_summary:     Rolling summary produced by CompactionEngine.  When non-empty it is     merged into the single system message so llama.cpp chat templates     that only honour one system block still receive the summary. |
+| nbchat/ui/chat_builder.py | build_messages | Build OpenAI messages from internal chat history.  Parameters ---------- history:     List of tuples ``(role, content, tool_id, tool_name, tool_args)``.     Should already be pre-windowed to the last N user turns. system_prompt:     The system message to prepend. task_log:     Optional list of recent action strings maintained by ChatUI.     When provided they are appended to the system prompt so the model     always knows what it has been doing even when old messages are     outside the window. |
 | nbchat/ui/chat_renderer.py | render_user |  |
 | nbchat/ui/chat_renderer.py | render_assistant |  |
 | nbchat/ui/chat_renderer.py | render_reasoning |  |
@@ -70,8 +73,8 @@
 | nbchat/ui/styles.py | system_message_html |  |
 | nbchat/ui/styles.py | compacted_summary_html |  |
 | nbchat/ui/styles.py | make_widget | Return an :class:`ipywidgets.HTML` widget.  The original code defined this function inside ``compacted_summary_html`` due to a stray indentation.  That made the module fail to import.  The function is now defined at module level. |
-| nbchat/ui/tool_executor.py | run_tool | Execute a tool with arguments and return the string result.  Parameters ---------- tool_name:     Name of the tool to execute. args_json:     JSON string containing the arguments for the tool. timeout:     Optional timeout in seconds.  If ``None`` a default of 60 seconds     is used for ``browser`` and ``run_tests`` tools, otherwise 30. |
-| nbchat/ui/tool_executor.py | trim_tool_output |  |
+| nbchat/ui/tool_executor.py | trim_tool_output | Trim large tool outputs to keep them within context budget.  Keeps the first and last halves of the output so both the beginning (often the most structured part) and the end (often the result) are preserved. |
+| nbchat/ui/tool_executor.py | run_tool | Execute a tool with arguments and return the (trimmed) string result. |
 | nbchat/ui/utils.py | md_to_html | Convert markdown to HTML using fenced code blocks.  This is the same implementation that lived in the legacy file. |
 | nbchat/ui/utils.py | changed_files |  |
 | run.py | _run | Run a shell command, optionally merging extra environment variables. |

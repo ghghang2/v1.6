@@ -1,3 +1,10 @@
+"""ChatUI — main entry point.
+
+Composes ContextMixin and ConversationMixin into a single widget-based
+chat interface.  This file contains only widget creation, history
+rendering, and event handling.  Context management lives in
+context_manager.py and the conversation loop in conversation.py.
+"""
 from __future__ import annotations
 
 import ipywidgets as widgets
@@ -12,16 +19,20 @@ from typing import List, Tuple
 from IPython.display import display
 
 from nbchat.ui import chat_renderer as renderer
-from nbchat.ui import tool_executor as executor
 from nbchat.ui import chat_builder
+from nbchat.ui.context_manager import ContextMixin
+from nbchat.ui.conversation import ConversationMixin
 from nbchat.ui.utils import changed_files
 from nbchat.core.utils import lazy_import
 
 
-class ChatUI:
-    """Chat interface with streaming, reasoning, and safe tool execution."""
+class ChatUI(ContextMixin, ConversationMixin):
+    """Chat interface with streaming, reasoning, and tool execution."""
 
     MAX_TOOL_TURNS = 50
+    # Number of user turns to include in the model's context window.
+    # Tool outputs are compressed so 2 turns stays well within budget.
+    WINDOW_TURNS = 2
 
     def __init__(self):
         db = lazy_import("nbchat.core.db")
@@ -30,11 +41,15 @@ class ChatUI:
         config = lazy_import("nbchat.core.config")
         self.system_prompt = config.DEFAULT_SYSTEM_PROMPT
         self.model_name = config.MODEL_NAME
-        self.max_history_turns = config.MAX_HISTORY_TURNS
 
         self.session_id = str(uuid.uuid4())
+        # Full append-only history — persisted to DB and shown in UI.
         # (role, content, tool_id, tool_name, tool_args)
         self.history: List[Tuple[str, str, str, str, str]] = []
+        # Running one-line log of tool actions — injected into system prompt
+        # so the model never loses track of what it has done.
+        self.task_log: List[str] = []
+
         self._stop_streaming = False
         self._stream_thread = None
 
@@ -58,8 +73,10 @@ class ChatUI:
         )
         self._refresh_tools_list()
 
-        new_chat_btn = widgets.Button(description="+", button_style="primary",
-                                      layout=widgets.Layout(width="100%"))
+        new_chat_btn = widgets.Button(
+            description="+", button_style="primary",
+            layout=widgets.Layout(width="100%"),
+        )
         new_chat_btn.on_click(self._on_new_chat)
 
         options = list(db.get_session_ids())
@@ -90,10 +107,14 @@ class ChatUI:
             layout=widgets.Layout(width="90%", min_height="50px", height="auto"),
             rows=2,
         )
-        send_btn = widgets.Button(description="Send", button_style="success",
-                                   layout=widgets.Layout(width="5%", padding="0", margin="0"))
-        stop_btn = widgets.Button(description="Stop", button_style="warning",
-                                   layout=widgets.Layout(width="5%", padding="0", margin="0"))
+        send_btn = widgets.Button(
+            description="Send", button_style="success",
+            layout=widgets.Layout(width="5%", padding="0", margin="0"),
+        )
+        stop_btn = widgets.Button(
+            description="Stop", button_style="warning",
+            layout=widgets.Layout(width="5%", padding="0", margin="0"),
+        )
         send_btn.on_click(self._on_send)
         stop_btn.on_click(lambda *_: setattr(self, "_stop_streaming", True))
 
@@ -164,6 +185,7 @@ class ChatUI:
     def _load_history(self):
         db = lazy_import("nbchat.core.db")
         self.history = db.load_history(self.session_id)
+        self.task_log = db.load_task_log(self.session_id)
         self._render_history()
 
     def _render_history(self):
@@ -203,34 +225,13 @@ class ChatUI:
         self.chat_history.children = list(self.chat_history.children) + [widget]
 
     # ------------------------------------------------------------------
-    # Sliding window — limits what is sent to the model
-    # ------------------------------------------------------------------
-    def _window(self) -> List[Tuple[str, str, str, str, str]]:
-        """Return the last ``max_history_turns`` user turns from history.
-
-        self.history grows unbounded (full DB log, full UI display).
-        Only this trimmed window is ever sent to the model.
-        Walks backward counting ``user`` rows; the returned slice always
-        starts on a ``user`` row so message ordering is never broken.
-        """
-        if self.max_history_turns <= 0:
-            return list(self.history)
-
-        user_count = 0
-        for i in range(len(self.history) - 1, -1, -1):
-            if self.history[i][0] == "user":
-                user_count += 1
-                if user_count == self.max_history_turns:
-                    return list(self.history[i:])
-        return list(self.history)
-
-    # ------------------------------------------------------------------
     # Event handlers
     # ------------------------------------------------------------------
     def _on_new_chat(self, _):
         db = lazy_import("nbchat.core.db")
         self.session_id = str(uuid.uuid4())
         self.history = []
+        self.task_log = []
         options = list(db.get_session_ids())
         if self.session_id not in options:
             options.append(self.session_id)
@@ -265,142 +266,3 @@ class ChatUI:
             daemon=True,
         )
         self._stream_thread.start()
-
-    # ------------------------------------------------------------------
-    # Conversation loop
-    # ------------------------------------------------------------------
-    def _process_conversation_turn(self):
-        client = lazy_import("nbchat.core.client")
-        tools  = lazy_import("nbchat.tools")
-        db     = lazy_import("nbchat.core.db")
-
-        # Build messages from the sliding window only — never the full history.
-        messages = chat_builder.build_messages(self._window(), self.system_prompt)
-        for msg in messages:
-            msg.pop("reasoning_content", None)
-
-        for turn in range(self.MAX_TOOL_TURNS + 1):
-            if self._stop_streaming:
-                break
-
-            reasoning, content, tool_calls, finish_reason = self._stream_response(
-                client, tools, messages
-            )
-
-            if reasoning:
-                self.history.append(("analysis", reasoning, "", "", ""))
-                db.log_message(self.session_id, "analysis", reasoning)
-
-            if not tool_calls or finish_reason != "tool_calls":
-                if content:
-                    self.history.append(("assistant", content, "", "", ""))
-                    db.log_message(self.session_id, "assistant", content)
-                break
-
-            if turn == self.MAX_TOOL_TURNS:
-                warning = f"⚠️ Maximum tool turns ({self.MAX_TOOL_TURNS}) reached."
-                self._append(renderer.render_assistant(warning))
-                self.history.append(("assistant", warning, "", "", ""))
-                db.log_message(self.session_id, "assistant", warning)
-                break
-
-            # --- tool-calling turn ---
-            full_msg = {
-                "role": "assistant",
-                "content": content,
-                "reasoning_content": reasoning,
-                "tool_calls": tool_calls,
-            }
-            messages.append(full_msg)
-            self.history.append(
-                ("assistant_full", "", "full", "full", json.dumps(full_msg))
-            )
-            db.log_message(self.session_id, "assistant", content)
-
-            for tc in tool_calls:
-                tool_name = tc["function"]["name"]
-                tool_args = tc["function"]["arguments"]
-
-                # Trim happens inside run_tool — trimmed result goes everywhere
-                # consistently: messages, self.history, DB, and UI.
-                result = executor.run_tool(tool_name, tool_args)
-
-                self.history.append(("tool", result, tc["id"], tool_name, tool_args))
-                db.log_tool_msg(self.session_id, tc["id"], tool_name, tool_args, result)
-                messages.append(
-                    {"role": "tool", "tool_call_id": tc["id"], "content": result}
-                )
-                self._append(renderer.render_tool(result, tool_name, tool_args))
-
-    # ------------------------------------------------------------------
-    # Streaming
-    # ------------------------------------------------------------------
-    def _stream_response(self, client, tools, messages):
-        reasoning_widget = None
-        assistant_widget = None
-        reasoning_accum = ""
-        content_accum = ""
-        tool_buffer: dict = {}
-        finish_reason = None
-
-        stream = client.chat.completions.create(
-            model=self.model_name, messages=messages,
-            stream=True, tools=tools, max_tokens=4096,
-        )
-        for chunk in stream:
-            if self._stop_streaming:
-                stream.close()
-                break
-            choice = chunk.choices[0]
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            delta = choice.delta
-
-            if getattr(delta, "reasoning_content", None):
-                if reasoning_widget is None:
-                    reasoning_widget = renderer.render_placeholder("reasoning")
-                    self._append(reasoning_widget)
-                reasoning_accum += delta.reasoning_content
-                reasoning_widget.value = renderer.render_reasoning(reasoning_accum).value
-
-            if delta.content:
-                if assistant_widget is None:
-                    assistant_widget = renderer.render_placeholder("assistant")
-                    children = list(self.chat_history.children)
-                    if reasoning_widget in children:
-                        children.insert(children.index(reasoning_widget) + 1, assistant_widget)
-                    else:
-                        children.append(assistant_widget)
-                    self.chat_history.children = children
-                content_accum += delta.content
-                assistant_widget.value = renderer.render_assistant(content_accum).value
-
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    entry = tool_buffer.setdefault(tc.index, {
-                        "id": tc.id, "type": "function",
-                        "function": {"name": tc.function.name, "arguments": ""},
-                    })
-                    if tc.function.arguments:
-                        entry["function"]["arguments"] += tc.function.arguments
-
-        tool_calls = [tool_buffer[i] for i in sorted(tool_buffer)] if tool_buffer else None
-
-        if tool_calls:
-            if assistant_widget is not None:
-                assistant_widget.value = renderer.render_assistant_with_tools(
-                    content_accum, tool_calls
-                ).value
-            else:
-                assistant_widget = renderer.render_assistant_with_tools("", tool_calls)
-                children = list(self.chat_history.children)
-                if reasoning_widget in children:
-                    children.insert(children.index(reasoning_widget) + 1, assistant_widget)
-                else:
-                    children.append(assistant_widget)
-                self.chat_history.children = children
-        elif assistant_widget is None and content_accum:
-            assistant_widget = renderer.render_assistant(content_accum)
-            self._append(assistant_widget)
-
-        return reasoning_accum, content_accum, tool_calls, finish_reason
