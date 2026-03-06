@@ -51,4 +51,17 @@ def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
     except Exception as e:
         return f"❌ Tool execution error: {e}"
 
+MAX_TOOL_OUTPUT_CHARS = 3000
+
+def trim_tool_output(result: str, max_chars: int = MAX_TOOL_OUTPUT_CHARS) -> str:
+    if len(result) <= max_chars:
+        return result
+    half = max_chars // 2
+    removed = len(result) - max_chars
+    return (
+        result[:half]
+        + f"\n[...{removed} chars trimmed — output too large...]\n"
+        + result[-half:]
+    )
+
 __all__ = ["run_tool"]

@@ -107,14 +107,9 @@ IGNORED_ITEMS = [
 # --------------------------------------------------------------------------- #
 
 SUMMARY_PROMPT = """\
-Produce a terse background-context block for an AI assistant. \
-This block will be injected into the system prompt — NOT shown to the user — \
-so write it as third-person notes, not as assistant speech. \
-Do not write "I will", "please let me know", or any first/second-person phrasing. \
-Format:
-
-TASK: [one sentence describing what the user is trying to accomplish]
-DONE: [bullet list of completed steps and their outcomes]
-FILES: [file paths created or modified, one per line, or "none"]
-STATE: [current state — what was just completed, what is mid-flight]
-"""
+Write a detailed summary of the conversation above. \
+Use plain text, no markdown.\
+Include relevant code blocks. \
+Cover: what the user asked for, what was done, which files were changed, and current status. \
+Be specific — include actual file paths, function names, key implementation details, code and outcomes. \
+Do not include any preamble or closing remarks."""

@@ -3,7 +3,7 @@
 user_name: ghghang2
 repo_name: v1.4
 context_len: 12000
-tail_len: 2
+tail_len: 4
 
 # ---------------------------------------------------------------------------
 #  Server and model configuration

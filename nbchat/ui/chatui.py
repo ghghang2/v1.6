@@ -371,6 +371,7 @@ class ChatUI:
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
                 result = executor.run_tool(tool_name, tool_args)
+                result = executor.trim_tool_output(result)
 
                 self.history.append(("tool", result, tc["id"], tool_name, tool_args))
                 db.log_tool_msg(self.session_id, tc["id"], tool_name, tool_args, result)
