@@ -91,7 +91,7 @@ class ContextMixin:
                 i += 1
 
         # Drop oldest exchanges, always keeping KEEP_RECENT_EXCHANGES.
-        KEEP_RECENT_EXCHANGES = 2
+        KEEP_RECENT_EXCHANGES = 4
         droppable = exchanges[:-KEEP_RECENT_EXCHANGES] if len(exchanges) > KEEP_RECENT_EXCHANGES else []
 
         offset = 0  # track index shift as we delete

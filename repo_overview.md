@@ -1,7 +1,7 @@
 | Relative path | Function | Description |
 |---------------|----------|-------------|
 | nbchat/core/client.py | get_client | Return a client that talks to the local OpenAI‑compatible server. |
-| nbchat/core/compressor.py | compress_tool_output | Return a compressed version of *result*.  If the output is short enough it is returned unchanged. Otherwise an LLM call extracts only the relevant information. If the output contains nothing relevant the sentinel string ``NO_RELEVANT_OUTPUT`` is returned so the caller can decide whether to store a placeholder or drop the row. |
+| nbchat/core/compressor.py | compress_tool_output | Return a compressed version of *result*.  Strategy: 1. Short outputs (< COMPRESS_THRESHOLD_CHARS) pass through unchanged. 2. File-read and command tools use head+tail truncation — no LLM call,    no information loss through relevance filtering. 3. All other tools use an LLM call that preserves structure (signatures,    errors, paths, values) rather than filtering by relevance. |
 | nbchat/core/config.py | _load_config | Load the YAML configuration file.  Parameters ---------- path: Path     Path to the YAML file.  Returns ------- dict     Parsed configuration or an empty dict on failure. |
 | nbchat/core/db.py | init_db | Create the database and tables if they do not exist.  Idempotent — safe to call on every application startup. |
 | nbchat/core/db.py | log_message | Persist a single chat line (user or assistant text). |

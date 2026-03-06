@@ -36,6 +36,14 @@ class ConversationMixin:
         for msg in messages:
             msg.pop("reasoning_content", None)
 
+        # Track tool calls made this session: (tool_name, tool_args) -> result
+        # Used to detect and short-circuit duplicate calls.
+        _seen_calls: dict = {}
+        # Stall detection: track the set of tool calls made each turn.
+        # If the same set repeats STALL_TURNS times, inject a hard interrupt.
+        STALL_TURNS = 3
+        _recent_call_sets: list = []
+
         for turn in range(self.MAX_TOOL_TURNS + 1):
             if self._stop_streaming:
                 break
@@ -61,6 +69,30 @@ class ConversationMixin:
                 db.log_message(self.session_id, "assistant", warning)
                 break
 
+            # --- Stall detection ---
+            # Record what tool calls were made this turn.
+            turn_calls = frozenset(
+                (tc["function"]["name"], tc["function"]["arguments"])
+                for tc in tool_calls
+            )
+            _recent_call_sets.append(turn_calls)
+            if len(_recent_call_sets) > STALL_TURNS:
+                _recent_call_sets.pop(0)
+            if (len(_recent_call_sets) == STALL_TURNS
+                    and len(set(_recent_call_sets)) == 1):
+                # All recent turns made identical tool calls — hard interrupt.
+                stall_msg = (
+                    "You appear to be stuck in a loop — you have made the "
+                    f"same tool calls {STALL_TURNS} turns in a row without "
+                    "progressing. Stop repeating these calls. Review the "
+                    "task log in the system prompt, identify what has already "
+                    "been done, and take a concrete next step that you have "
+                    "not yet attempted."
+                )
+                _log.debug("stall detected — injecting interrupt")
+                messages.append({"role": "user", "content": stall_msg})
+                _recent_call_sets.clear()
+
             # --- tool-calling turn ---
             full_msg = {
                 "role": "assistant",
@@ -81,16 +113,42 @@ class ConversationMixin:
             for tc in tool_calls:
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
+                call_key = (tool_name, tool_args)
 
-                # Run the tool.
+                # --- Duplicate call detection ---
+                if call_key in _seen_calls:
+                    prior = _seen_calls[call_key]
+                    model_result = (
+                        f"[DUPLICATE CALL BLOCKED] You already called "
+                        f"{tool_name} with these exact arguments. "
+                        f"Prior result: {prior[:400]}"
+                        + ("..." if len(prior) > 400 else "")
+                        + " — do not repeat this call. Use the result above "
+                        "and proceed to the next step."
+                    )
+                    _log.debug(f"duplicate call blocked: {tool_name}")
+                    self._append(renderer.render_tool(
+                        model_result, tool_name, tool_args
+                    ))
+                    messages.append(
+                        {"role": "tool", "tool_call_id": tc["id"],
+                         "content": model_result}
+                    )
+                    self.history.append(
+                        ("tool", model_result, tc["id"], tool_name, tool_args)
+                    )
+                    db.log_tool_msg(
+                        self.session_id, tc["id"], tool_name, tool_args, model_result
+                    )
+                    continue
+
+                # --- Normal execution ---
                 raw_result = executor.run_tool(tool_name, tool_args)
 
-                # Render immediately with raw output so the UI is responsive.
-                # The model receives the compressed version.
+                # Render immediately so the UI is responsive.
                 self._append(renderer.render_tool(raw_result, tool_name, tool_args))
 
-                # Compress asynchronously — this is a blocking call but
-                # the UI already shows the raw result above.
+                # Compress for the model.
                 compressed = comp.compress_tool_output(
                     tool_name, tool_args, raw_result,
                     model=self.model_name,
@@ -102,10 +160,11 @@ class ConversationMixin:
                 else:
                     model_result = compressed
 
+                # Remember this call so duplicates can be intercepted.
+                _seen_calls[call_key] = model_result
+
                 self._log_action(tool_name, tool_args, model_result)
 
-                # Store raw result in history/DB (full fidelity for UI).
-                # Send compressed result to the model only.
                 self.history.append(
                     ("tool", raw_result, tc["id"], tool_name, tool_args)
                 )
