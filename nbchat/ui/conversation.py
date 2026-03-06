@@ -29,6 +29,17 @@ class ConversationMixin:
         db = lazy_import("nbchat.core.db")  # noqa: F821
 
         real_client = _client_mod.get_client()
+        try:
+            self._run_conversation_loop(
+                real_client, db, renderer, executor, chat_builder, comp
+            )
+        except Exception as exc:
+            _log.debug(f"_process_conversation_turn crashed: {type(exc).__name__}: {exc}", exc_info=True)
+            self._append(renderer.render_assistant(
+                f"⚠️ Conversation loop stopped unexpectedly: {type(exc).__name__}: {exc}"
+            ))
+
+    def _run_conversation_loop(self, real_client, db, renderer, executor, chat_builder, comp) -> None:
 
         messages = chat_builder.build_messages(
             self._window(), self.system_prompt, self.task_log
@@ -175,7 +186,7 @@ class ConversationMixin:
                     {"role": "tool", "tool_call_id": tc["id"], "content": model_result}
                 )
 
-    def _stream_response(self, client, messages):
+    def _stream_response(self, real_client, messages):
         from nbchat.ui import chat_renderer as renderer
         tools = lazy_import("nbchat.tools")  # noqa: F821
 
@@ -189,48 +200,55 @@ class ConversationMixin:
         # Hard gate — mathematically prevents context overflow.
         self._hard_trim(messages)
 
-        stream = client.chat.completions.create(
-            model=self.model_name, messages=messages,
-            stream=True, tools=tools, max_tokens=4096,
-        )
-        for chunk in stream:
-            if self._stop_streaming:
-                stream.close()
-                break
-            choice = chunk.choices[0]
-            if choice.finish_reason:
-                finish_reason = choice.finish_reason
-            delta = choice.delta
+        try:
+            stream = real_client.chat.completions.create(
+                model=self.model_name, messages=messages,
+                stream=True, tools=tools, max_tokens=4096,
+            )
+            for chunk in stream:
+                if self._stop_streaming:
+                    stream.close()
+                    break
+                choice = chunk.choices[0]
+                if choice.finish_reason:
+                    finish_reason = choice.finish_reason
+                delta = choice.delta
 
-            if getattr(delta, "reasoning_content", None):
-                if reasoning_widget is None:
-                    reasoning_widget = renderer.render_placeholder("reasoning")
-                    self._append(reasoning_widget)
-                reasoning_accum += delta.reasoning_content
-                reasoning_widget.value = renderer.render_reasoning(reasoning_accum).value
+                if getattr(delta, "reasoning_content", None):
+                    if reasoning_widget is None:
+                        reasoning_widget = renderer.render_placeholder("reasoning")
+                        self._append(reasoning_widget)
+                    reasoning_accum += delta.reasoning_content
+                    reasoning_widget.value = renderer.render_reasoning(reasoning_accum).value
 
-            if delta.content:
-                if assistant_widget is None:
-                    assistant_widget = renderer.render_placeholder("assistant")
-                    children = list(self.chat_history.children)
-                    if reasoning_widget in children:
-                        children.insert(
-                            children.index(reasoning_widget) + 1, assistant_widget
-                        )
-                    else:
-                        children.append(assistant_widget)
-                    self.chat_history.children = children
-                content_accum += delta.content
-                assistant_widget.value = renderer.render_assistant(content_accum).value
+                if delta.content:
+                    if assistant_widget is None:
+                        assistant_widget = renderer.render_placeholder("assistant")
+                        children = list(self.chat_history.children)
+                        if reasoning_widget in children:
+                            children.insert(
+                                children.index(reasoning_widget) + 1, assistant_widget
+                            )
+                        else:
+                            children.append(assistant_widget)
+                        self.chat_history.children = children
+                    content_accum += delta.content
+                    assistant_widget.value = renderer.render_assistant(content_accum).value
 
-            if delta.tool_calls:
-                for tc in delta.tool_calls:
-                    entry = tool_buffer.setdefault(tc.index, {
-                        "id": tc.id, "type": "function",
-                        "function": {"name": tc.function.name, "arguments": ""},
-                    })
-                    if tc.function.arguments:
-                        entry["function"]["arguments"] += tc.function.arguments
+                if delta.tool_calls:
+                    for tc in delta.tool_calls:
+                        entry = tool_buffer.setdefault(tc.index, {
+                            "id": tc.id, "type": "function",
+                            "function": {"name": tc.function.name, "arguments": ""},
+                        })
+                        if tc.function.arguments:
+                            entry["function"]["arguments"] += tc.function.arguments
+        except Exception as exc:
+            _log.debug(
+                f"_stream_response failed: {type(exc).__name__}: {exc}",
+                exc_info=True,
+            )
+            raise
 
         tool_calls = (
             [tool_buffer[i] for i in sorted(tool_buffer)] if tool_buffer else None
