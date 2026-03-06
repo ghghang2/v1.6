@@ -35,7 +35,14 @@ except Exception as exc:  # pragma: no cover - yaml is required for config
     logging.warning("PyYAML is not installed. Falling back to defaults.")
     yaml = None
 
-_CONFIG_PATH = Path(__file__).resolve().parent.parent / "repo_config.yaml"
+# The configuration file lives at the repository root, one level above the
+# ``nbchat`` package. ``config.py`` is in ``nbchat/core`` so we need to go up
+# three directories (``config.py`` -> ``core`` -> ``nbchat`` -> ``<root>``).
+# The original code used ``parent.parent`` which pointed to
+# ``<root>/nbchat`` and resulted in an empty configuration dictionary.
+# This caused ``REPO_NAME`` to fall back to the hard‑coded default of
+# ``v1.4``.
+_CONFIG_PATH = Path(__file__).resolve().parent.parent.parent / "repo_config.yaml"
 
 def _load_config(path: Path) -> dict:
     """Load the YAML configuration file.
