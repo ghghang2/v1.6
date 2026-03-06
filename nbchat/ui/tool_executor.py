@@ -47,7 +47,7 @@ def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
     future = _executor.submit(func, **args)
     try:
         result = future.result(timeout=timeout)
-        return trim_tool_output(str(result))
+        return str(result)
     except TimeoutError:
         return f"⏰ Tool '{tool_name}' timed out after {timeout} seconds."
     except Exception as e:

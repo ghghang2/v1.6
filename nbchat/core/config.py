@@ -6,19 +6,14 @@ Application‑wide constants.
 # --------------------------------------------------------------------------- #
 #  General settings
 # --------------------------------------------------------------------------- #
-# Base URL of the local llama-server.  Historically this was called NGROK_URL
-SERVER_URL = "http://localhost:8000"
-MODEL_NAME = "unsloth/gpt-oss-20b-GGUF:F16"
-# SERVER_URL = "https://api.deepseek.com"
-# MODEL_NAME = "deepseek-reasoner"
-# SERVER_URL = "https://api.openai.com"
-# MODEL_NAME = "gpt-5-mini"
-DEFAULT_SYSTEM_PROMPT = f'''You are a helpful assistant with the singular goal of understanding and satisfying the user's requests. Never be lazy and always think step-by-step. Always list out multiple options before deciding on the best next step to take. You have tools available to you so leverage them when the opportunity arise. You must always review how the tool is designed to be used and ensure that you are using each tool correctly. If a tool call fails, you must immediately review what you did and assess thoroughly what caused the failure. Self-improvement is core to your ethos, and you must be vigilant and self-assessing at all times to ensure you are on the best trajectory possible to helping the user with the user's requests.
-
-**grep**: Never use the `..` flag; using `..` can cause timeouts. Never run commands like this `grep -R "search_term" -n ..`
-
-Never ever use emojis.
-'''
+# ``repo_config.yaml`` will provide most runtime configuration. The
+# following constants are loaded from the YAML file at import time.
+# They are defined here as *fallbacks* only to keep the module
+# importable when the YAML is missing (e.g. during tests).
+# The actual values are overwritten below after the YAML is parsed.
+SERVER_URL: str = "http://localhost:8000"
+MODEL_NAME: str = "unsloth/gpt-oss-20b-GGUF:F16"
+DEFAULT_SYSTEM_PROMPT: str = """You are a helpful assistant..."""
 
 # --------------------------------------------------------------------------- #
 #  GitHub repository details
@@ -84,8 +79,8 @@ USER_NAME = _cfg.get("user_name", "ghghang2")
 REPO_NAME = _cfg.get("repo_name", "v1.4")
 CONTEXT_TOKEN_THRESHOLD = int(_cfg.get("context_len", 16384))
 TAIL_MESSAGES = int(_cfg.get("tail_len", 2))
-MAX_TOOL_OUTPUT_CHARS = 6000   # chars kept per tool result (3k head + 3k tail)
-MAX_HISTORY_TURNS = 10         # user turns sent to model (full history still saved to DB)
+MAX_TOOL_OUTPUT_CHARS = int(_cfg.get("max_tool_output_chars", 6000))
+MAX_HISTORY_TURNS = int(_cfg.get("max_history_turns", 10))
 
 # ---------------------------------------------------------------------------
 #  Runtime configuration for run.py

@@ -25,18 +25,30 @@ class ContextMixin:
     # ------------------------------------------------------------------
 
     def _window(self) -> List[_Row]:
-        """Return the last WINDOW_TURNS user turns of history.
+        """Return a bounded slice of history for the model context.
 
-        self.history is never modified — only what the model sees is trimmed.
-        Always starts on a user row so message ordering is never broken.
+        Limits by WINDOW_TURNS user turns AND by MAX_WINDOW_ROWS to
+        prevent massive rebuilds when a single turn had many exchanges.
+        Always starts on a user row.
         """
+        MAX_WINDOW_ROWS = 30  # hard row cap regardless of turn count
         user_count = 0
+        cut = len(self.history)
         for i in range(len(self.history) - 1, -1, -1):
             if self.history[i][0] == "user":
                 user_count += 1
                 if user_count == self.WINDOW_TURNS:
-                    return list(self.history[i:])
-        return list(self.history)
+                    cut = i
+                    break
+        window = list(self.history[cut:])
+        # Apply hard row cap — keep the tail.
+        if len(window) > MAX_WINDOW_ROWS:
+            # Snap to nearest user row after the cap boundary.
+            start = len(window) - MAX_WINDOW_ROWS
+            while start < len(window) and window[start][0] != "user":
+                start += 1
+            window = window[start:]
+        return window
 
     # ------------------------------------------------------------------
     # Hard trim — called immediately before every API call
@@ -46,19 +58,19 @@ class ContextMixin:
         """Enforce a hard token budget by dropping oldest complete exchanges.
 
         An exchange is one assistant-with-tool-calls message plus all the
-        tool-result messages that immediately follow it.  Exchanges are
-        always dropped as a complete atomic unit so the message sequence
-        is never broken (the server errors if a tool message lacks a
-        preceding assistant tool_call).
+        tool-result messages that immediately follow it.  Always dropped
+        atomically — never one message at a time — to preserve the
+        invariant that every tool message has a preceding assistant tool_call.
 
-        Strategy:
-        1. Identify all droppable exchange blocks in messages.
-        2. Keep at least KEEP_RECENT_EXCHANGES most recent exchanges intact.
-        3. Drop oldest exchange blocks until under budget.
-        4. Last resort: truncate the content of the largest tool result.
+        The exchange list is rebuilt fresh after each drop so index
+        offsets are always correct.
         """
-        config = lazy_import("nbchat.core.config")  # noqa: F821 — provided by ChatUI
+        config = lazy_import("nbchat.core.config")  # noqa: F821
         limit = int(config.CONTEXT_TOKEN_THRESHOLD * 0.85)
+        # Hard cap: never keep more than this many exchanges regardless
+        # of token budget — prevents the 26-drop cascade on turn rebuild.
+        MAX_EXCHANGES = 8
+        KEEP_RECENT_EXCHANGES = 4
 
         def est(msg: dict) -> int:
             content = msg.get("content") or ""
@@ -71,73 +83,76 @@ class ContextMixin:
         def total() -> int:
             return sum(est(m) for m in messages)
 
-        if total() <= limit:
-            return
+        def get_exchanges():
+            """Rebuild exchange list from current messages state."""
+            result = []
+            i = 1
+            while i < len(messages):
+                m = messages[i]
+                if m.get("role") == "assistant" and m.get("tool_calls"):
+                    start = i
+                    end = i + 1
+                    while end < len(messages) and messages[end].get("role") == "tool":
+                        end += 1
+                    result.append((start, end))
+                    i = end
+                else:
+                    i += 1
+            return result
 
-        # Build an ordered list of (start, end) index pairs for every
-        # assistant+tool_calls exchange in messages (excluding index 0).
-        exchanges = []
-        i = 1
-        while i < len(messages):
-            m = messages[i]
-            if m.get("role") == "assistant" and m.get("tool_calls"):
-                start = i
-                end = i + 1
-                while end < len(messages) and messages[end].get("role") == "tool":
-                    end += 1
-                exchanges.append((start, end))
-                i = end
-            else:
-                i += 1
-
-        # Drop oldest exchanges, always keeping KEEP_RECENT_EXCHANGES.
-        KEEP_RECENT_EXCHANGES = 6
-        droppable = exchanges[:-KEEP_RECENT_EXCHANGES] if len(exchanges) > KEEP_RECENT_EXCHANGES else []
-
-        offset = 0  # track index shift as we delete
-        for start, end in droppable:
-            if total() <= limit:
+        # First pass: enforce MAX_EXCHANGES cap regardless of token count.
+        # This prevents massive rebuilds from overwhelming _hard_trim.
+        while True:
+            exchanges = get_exchanges()
+            if len(exchanges) <= MAX_EXCHANGES:
                 break
-            s = start - offset
-            e = end - offset
-            _log.debug(
-                f"_hard_trim: dropping exchange [{s}:{e}] "
-                f"({e-s} messages), total now {total()}"
-            )
-            # Before dropping, append a one-liner to the system message
-            # so the model retains awareness of what was found.
-            dropped_summaries = [
-                messages[s + i].get("content", "")[:120]
-                for i in range(1, e - s)
-                if messages[s + i].get("role") == "tool"
-            ]
-            if dropped_summaries and messages and messages[0].get("role") == "system":
-                note = " | ".join(dropped_summaries)
-                messages[0]["content"] += f"\n[earlier result: {note}]"
-
+            # Drop oldest exchange.
+            s, e = exchanges[0]
+            dropped = [messages[s+i].get("content","")[:80]
+                       for i in range(1, e-s)
+                       if messages[s+i].get("role") == "tool"]
+            if dropped and messages[0].get("role") == "system":
+                messages[0]["content"] += f"\n[earlier: {' | '.join(dropped)}]"
+            _log.debug(f"_hard_trim: cap drop [{s}:{e}], exchanges={len(exchanges)}")
             del messages[s:e]
-            offset += (end - start)
 
-        # Last resort: truncate the largest tool result.
+        # Second pass: drop by token budget, keeping KEEP_RECENT_EXCHANGES.
+        while total() > limit:
+            exchanges = get_exchanges()
+            droppable = (exchanges[:-KEEP_RECENT_EXCHANGES]
+                         if len(exchanges) > KEEP_RECENT_EXCHANGES else [])
+            if not droppable:
+                break
+            s, e = droppable[0]
+            dropped = [messages[s+i].get("content","")[:80]
+                       for i in range(1, e-s)
+                       if messages[s+i].get("role") == "tool"]
+            if dropped and messages[0].get("role") == "system":
+                messages[0]["content"] += f"\n[earlier: {' | '.join(dropped)}]"
+            _log.debug(
+                f"_hard_trim: budget drop [{s}:{e}] ({e-s} msgs),"
+                f" total now {total()}"
+            )
+            del messages[s:e]
+
+        # Last resort: truncate content of the largest tool result.
         while total() > limit:
             tool_indices = [
-                i for i, m in enumerate(messages)
-                if m.get("role") == "tool"
+                i for i, m in enumerate(messages) if m.get("role") == "tool"
             ]
             if not tool_indices:
                 break
-            largest = max(tool_indices, key=lambda i: len(messages[i].get("content", "")))
+            largest = max(
+                tool_indices, key=lambda i: len(messages[i].get("content", ""))
+            )
             original = messages[largest].get("content", "")
             if len(original) <= 200:
-                break  # already tiny, nothing left to trim
+                break
             messages[largest]["content"] = (
                 original[:200]
-                + f"\n[...truncated {len(original)-200} chars to fit context...]"
+                + f"\n[...truncated {len(original)-200} chars...]"
             )
-            _log.debug(
-                f"_hard_trim: truncated tool result at [{largest}] "
-                f"{len(original)} -> 200 chars"
-            )
+            _log.debug(f"_hard_trim: truncated [{largest}] {len(original)}->200")
 
     # ------------------------------------------------------------------
     # Task log

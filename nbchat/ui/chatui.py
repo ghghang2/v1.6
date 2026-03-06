@@ -29,7 +29,7 @@ from nbchat.core.utils import lazy_import
 class ChatUI(ContextMixin, ConversationMixin):
     """Chat interface with streaming, reasoning, and tool execution."""
 
-    MAX_TOOL_TURNS = 50
+    MAX_TOOL_TURNS = 100
     # Number of user turns to include in the model's context window.
     # Tool outputs are compressed so 2 turns stays well within budget.
     WINDOW_TURNS = 4
