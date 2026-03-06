@@ -32,7 +32,7 @@ DEFAULT_SYSTEM_PROMPT: |
 #  Items to ignore in the repo
 # ---------------------------------------------------------------------------
 IGNORED_ITEMS:
-  - " .*"  # All hidden files (escaped to avoid YAML alias)
+  - "*.*"  # All hidden files (escaped to avoid YAML alias)
   - "sample_data"
   - "llama-server"
   - "__pycache__"
