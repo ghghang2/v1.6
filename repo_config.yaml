@@ -2,8 +2,8 @@
 # Update these values when you want to change the target GitHub repo.
 user_name: ghghang2
 repo_name: v1.5
-context_len: 12000
-tail_len: 4
+context_len: 30000
+tail_len: 8
 
 # ---------------------------------------------------------------------------
 #  Server and model configuration
@@ -46,7 +46,7 @@ IGNORED_ITEMS:
 # ---------------------------------------------------------------------------
 port: 8000
 n_parallel: 1
-ctx_size: 16384
+ctx_size: 32768
 n_gpu_layers: 999
 service_info_path: service_info.json
 llama_log_path: llama_server.log

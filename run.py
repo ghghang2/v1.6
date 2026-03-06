@@ -32,7 +32,7 @@ from nbchat.core import config
 # Paths and repository identifiers are now read from the configuration file.
 SERVICE_INFO  = Path(config.SERVICE_INFO_PATH)
 LLAMA_LOG     = Path(config.LLAMA_LOG_PATH)
-REPO          = f"{config.USER_NAME}/{config.REPO_NAME}"
+RELEASE_REPO          = f"{config.USER_NAME}/llamacpp_t4_v2"
 # Q4_K_M (~12 GB) fits entirely in T4 VRAM — no CPU offload, maximum TPS.
 # Switch to Q8_0 (~21 GB) only if output quality is insufficient (will require partial CPU offload).
 MODEL         = config.MODEL_NAME
@@ -111,7 +111,7 @@ def main() -> None:
 
     # Download pre-built llama-server binary
     _run(
-        f"gh release download --repo {REPO} --pattern llama-server --skip-existing",
+        f"gh release download --repo {RELEASE_REPO} --pattern llama-server --skip-existing",
         extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
     )
     _run("chmod +x ./llama-server")
@@ -130,8 +130,8 @@ def main() -> None:
                 "--ctx-size",     str(CTX_SIZE),
                 "--n-gpu-layers", str(N_GPU_LAYERS),
                 "--flash-attn", "1",
-                "--batch-size", "1024",
-                "--ubatch-size", "1024",
+                "--batch-size", "2048",
+                "--ubatch-size", "2048",
                 "--mlock",
                 "--metrics",
             ],
@@ -153,16 +153,6 @@ def main() -> None:
     print("Installing Playwright dependencies…")
     _run("sudo apt-get update -qq")
     _run("sudo apt-get install -y libxcomposite1 libgtk-3-0 libatk1.0-0")
-    # _run(
-    #     f"gh release download --repo {REPO} --pattern ffmpeg-linux --pattern firefox-1509.tar.gz --skip-existing",
-    #     extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
-    # )
-    # _run("sudo mkdir -p /root/.cache/ms-playwright/ffmpeg-1011")
-    # _run("sudo mkdir -p /root/.cache/ms-playwright/firefox-1509")
-    # _run("sudo mv ffmpeg-linux /root/.cache/ms-playwright/ffmpeg-1011/")
-    # _run("sudo chmod +x /root/.cache/ms-playwright/ffmpeg-1011/ffmpeg-linux")
-    # _run("sudo tar -xzf firefox-1509.tar.gz -C /root/.cache/ms-playwright/firefox-1509 --strip-components=1")
-    # _run("PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 npx --yes playwright install --with-deps firefox")
     _run("playwright install --with-deps firefox")
 
     if not _wait_for(f"http://localhost:{PORT}/health"):
