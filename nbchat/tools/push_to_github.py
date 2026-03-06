@@ -30,7 +30,6 @@ from nbchat.core.config import REPO_NAME
 
 
 def push_to_github(
-    repo_name: Optional[str] = None,
     commit_message: str = "Auto commit",
     rebase: bool = False,
 ) -> str:
@@ -38,9 +37,6 @@ def push_to_github(
 
     Parameters
     ----------
-    repo_name:
-        Optional override for the repository name.  If ``None`` the
-        default from :data:`nbchat.core.config.REPO_NAME` is used.
     commit_message:
         Commit message for the auto commit.  Defaults to ``"Auto commit"``.
     rebase:
@@ -48,7 +44,7 @@ def push_to_github(
         the original behaviour.
     """
     try:
-        target_repo = repo_name or REPO_NAME
+        target_repo = REPO_NAME
         client = RemoteClient(Path("."))
         # 1. Ensure the GitHub repo exists
         client.ensure_repo(target_repo)
@@ -72,13 +68,12 @@ def push_to_github(
 # ---------------------------------------------------------------------------
 func = push_to_github
 name = "push_to_github"
-description = "Push the current local repository to GitHub. Optionally specify a repository name, commit message, and whether to rebase during pull."
+description = "Push the current local repository to GitHub with a commit message and optional rebase flag."
 
 schema = {
     "parameters": {
         "type": "object",
         "properties": {
-            "repo_name": {"type": "string"},
             "commit_message": {"type": "string"},
             "rebase": {"type": "boolean"},
         },
