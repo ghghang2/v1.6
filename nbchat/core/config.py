@@ -106,12 +106,15 @@ IGNORED_ITEMS = [
 #  Context compaction defaults
 # --------------------------------------------------------------------------- #
 
-SUMMARY_PROMPT = (
-            "Summarize the conversation history thus far in a more compact form for use as context later:\n"
-            "Restating the user requests so the conversation stays on track\n"
-            "List major assistant outputs and work progress that progresses toward resolving user requests\n"
-            "List all tool calls and tool outputs (summarize succinctly if output too large).\n"
-            "Summarize all tool call failures, note the failure reasons.\n"
-            "Answer the questions where the conversation history leaves off at? What are next steps are?\n"
-            "Must preserve essential context to ensure user requests are satisfied."
-        )
+SUMMARY_PROMPT = """\
+Produce a terse background-context block for an AI assistant. \
+This block will be injected into the system prompt — NOT shown to the user — \
+so write it as third-person notes, not as assistant speech. \
+Do not write "I will", "please let me know", or any first/second-person phrasing. \
+Format:
+
+TASK: [one sentence describing what the user is trying to accomplish]
+DONE: [bullet list of completed steps and their outcomes]
+FILES: [file paths created or modified, one per line, or "none"]
+STATE: [current state — what was just completed, what is mid-flight]
+"""

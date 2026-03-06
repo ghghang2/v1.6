@@ -29,9 +29,9 @@ def build_messages(
     if context_summary:
         system_content = (
             system_prompt
-            + "\n\n--- SUMMARY OF EARLIER CONVERSATION ---\n"
+            + "\n\n--- BACKGROUND CONTEXT (prior conversation, not recent) ---\n"
             + context_summary
-            + "\n--- END SUMMARY ---"
+            + "\n--- END BACKGROUND CONTEXT. Continue the task from STATE above. ---"
         )
     else:
         system_content = system_prompt

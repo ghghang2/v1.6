@@ -309,7 +309,7 @@ class CompactionEngine:
 
         summary = response.choices[0].message.content
         _log.debug(
-            f"summary produced ({len(summary)} chars): {summary[:120]}..."
+            f"summary produced ({len(summary)} chars): {summary}..."
         )
         return summary
 
