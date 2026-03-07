@@ -1,18 +1,16 @@
 """Persist chat history in a lightweight SQLite database.
 
 The database is created in the repository root as ``chat_history.db``.
-It contains a single table ``chat_log`` which stores every user and
-assistant message together with a session identifier.
-
-Context summaries produced by the compaction engine are stored as rows
-with ``role = 'context_summary'``.  There is at most one such row per
-session; ``save_context_summary`` replaces any existing one.
+Two tables:
+  chat_log      — every message row for every session.
+  session_meta  — per-session key/value metadata (context summaries,
+                  turn summary caches, task logs, etc.).
 """
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
-import json
 
 DB_PATH = Path(__file__).resolve().parent.parent / "chat_history.db"
 
@@ -21,52 +19,41 @@ DB_PATH = Path(__file__).resolve().parent.parent / "chat_history.db"
 # Schema
 # ---------------------------------------------------------------------------
 
-def init_db(conn: sqlite3.Connection | None = None) -> None:
-    """Create the database and tables if they do not exist.
-
-    Idempotent — safe to call on every application startup.
-    """
-    if conn is None:
-        with sqlite3.connect(DB_PATH) as conn:
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS chat_log (
-                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_id  TEXT NOT NULL,
-                    role        TEXT NOT NULL,
-                    content     TEXT,
-                    tool_id     TEXT,
-                    tool_name   TEXT,
-                    tool_args   TEXT,
-                    ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                );
-                """
+def init_db() -> None:
+    """Create tables if they do not exist. Idempotent."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS chat_log (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                role        TEXT NOT NULL,
+                content     TEXT,
+                tool_id     TEXT,
+                tool_name   TEXT,
+                tool_args   TEXT,
+                ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
-            conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_session ON chat_log(session_id);"
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_session ON chat_log(session_id)"
+        )
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS session_meta (
+                session_id  TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                value       TEXT,
+                ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (session_id, key)
             )
-            # Separate table for per-session metadata (e.g. context summaries)
-            # so they never interfere with ordered history reconstruction.
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_meta (
-                    session_id  TEXT NOT NULL,
-                    key         TEXT NOT NULL,
-                    value       TEXT,
-                    ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (session_id, key)
-                );
-                """
-            )
-            conn.commit()
+        """)
+        conn.commit()
 
 
 # ---------------------------------------------------------------------------
-# Chat log helpers
+# Chat log
 # ---------------------------------------------------------------------------
 
 def log_message(session_id: str, role: str, content: str) -> None:
-    """Persist a single chat line (user or assistant text)."""
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
             "INSERT INTO chat_log (session_id, role, content) VALUES (?, ?, ?)",
@@ -75,182 +62,127 @@ def log_message(session_id: str, role: str, content: str) -> None:
         conn.commit()
 
 
-def log_row(
-    session_id: str,
-    role: str,
-    content: str,
-    tool_id: str = "",
-    tool_name: str = "",
-    tool_args: str = "",
-) -> None:
-    """Persist a single row with all fields.
-
-    Use this for ``assistant_full`` rows (which carry tool_calls in
-    tool_args as JSON) and any other row type that needs the full schema.
-    Unlike ``log_message``, this never loses tool_id / tool_args data.
-    """
+def log_row(session_id: str, role: str, content: str,
+            tool_id: str = "", tool_name: str = "", tool_args: str = "") -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            """
-            INSERT INTO chat_log
-                (session_id, role, content, tool_id, tool_name, tool_args)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (
-                session_id,
-                role,
-                content or "",
-                tool_id or "",
-                tool_name or "",
-                tool_args or "",
-            ),
+            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, role, content or "", tool_id or "", tool_name or "", tool_args or ""),
         )
         conn.commit()
 
 
-def log_tool_msg(
-    session_id: str,
-    tool_id: str,
-    tool_name: str,
-    tool_args: str,
-    content: str,
-) -> None:
-    """Persist a tool result row with its associated metadata."""
+def log_tool_msg(session_id: str, tool_id: str, tool_name: str,
+                 tool_args: str, content: str) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            """
-            INSERT INTO chat_log
-                (session_id, role, content, tool_id, tool_name, tool_args)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            (session_id, "tool", content, tool_id, tool_name, tool_args),
+            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args) "
+            "VALUES (?, 'tool', ?, ?, ?, ?)",
+            (session_id, content, tool_id, tool_name, tool_args),
         )
         conn.commit()
 
 
-def load_history(
-    session_id: str,
-    limit: int | None = None,
-) -> list[tuple[str, str, str, str, str]]:
-    """Return chat rows for *session_id* in insertion order.
-
-    Returns tuples of ``(role, content, tool_id, tool_name, tool_args)``.
-    """
+def load_history(session_id: str,
+                 limit: int | None = None) -> list[tuple[str, str, str, str, str]]:
     with sqlite3.connect(DB_PATH) as conn:
         query = (
             "SELECT role, content,"
-            " COALESCE(tool_id, ''),"
-            " COALESCE(tool_name, ''),"
-            " COALESCE(tool_args, '')"
-            " FROM chat_log"
-            " WHERE session_id = ?"
-            " ORDER BY id ASC"
+            " COALESCE(tool_id, ''), COALESCE(tool_name, ''), COALESCE(tool_args, '')"
+            " FROM chat_log WHERE session_id = ? ORDER BY id ASC"
         )
         params: list = [session_id]
         if limit is not None:
             query += " LIMIT ?"
             params.append(limit)
-        cur = conn.execute(query, params)
-        return cur.fetchall()
+        return conn.execute(query, params).fetchall()
 
 
 def get_session_ids() -> list[str]:
-    """Return all distinct session IDs ordered by most recent activity."""
     with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(
+        return [r[0] for r in conn.execute(
             "SELECT DISTINCT session_id FROM chat_log ORDER BY ts DESC"
-        )
-        return [row[0] for row in cur.fetchall()]
+        ).fetchall()]
 
 
-def replace_session_history(
-    session_id: str,
-    history: list[tuple[str, str, str, str, str]],
-) -> None:
-    """Atomically replace all chat_log rows for *session_id*.
-
-    Used by the compaction engine after it trims older turns.  The context
-    summary is stored separately via ``save_context_summary`` and is
-    therefore unaffected by this call.
-    """
+def replace_session_history(session_id: str,
+                             history: list[tuple[str, str, str, str, str]]) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM chat_log WHERE session_id = ?", (session_id,))
         conn.executemany(
-            """
-            INSERT INTO chat_log
-                (session_id, role, content, tool_id, tool_name, tool_args)
-            VALUES (?, ?, ?, ?, ?, ?)
-            """,
-            [
-                (session_id, r, c, tid, tname, targs)
-                for r, c, tid, tname, targs in history
-            ],
+            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            [(session_id, r, c, tid, tname, targs) for r, c, tid, tname, targs in history],
         )
         conn.commit()
 
 
 # ---------------------------------------------------------------------------
-# Context summary helpers
+# session_meta helpers (shared upsert pattern)
+# ---------------------------------------------------------------------------
+
+def _meta_set(session_id: str, key: str, value: str) -> None:
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO session_meta (session_id, key, value, ts) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(session_id, key) DO UPDATE SET value=excluded.value, ts=excluded.ts",
+            (session_id, key, value),
+        )
+        conn.commit()
+
+
+def _meta_get(session_id: str, key: str) -> str:
+    with sqlite3.connect(DB_PATH) as conn:
+        row = conn.execute(
+            "SELECT value FROM session_meta WHERE session_id=? AND key=?",
+            (session_id, key),
+        ).fetchone()
+        return row[0] if row and row[0] else ""
+
+
+# ---------------------------------------------------------------------------
+# Context summary  (legacy — kept for backward compat with old sessions)
 # ---------------------------------------------------------------------------
 
 def save_context_summary(session_id: str, summary: str) -> None:
-    """Upsert the rolling context summary for *session_id*.
-
-    There is at most one summary row per session; this replaces any
-    previously stored value.
-    """
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            INSERT INTO session_meta (session_id, key, value, ts)
-            VALUES (?, 'context_summary', ?, CURRENT_TIMESTAMP)
-            ON CONFLICT(session_id, key) DO UPDATE SET
-                value = excluded.value,
-                ts    = excluded.ts
-            """,
-            (session_id, summary),
-        )
-        conn.commit()
+    _meta_set(session_id, "context_summary", summary)
 
 
 def load_context_summary(session_id: str) -> str:
-    """Return the stored context summary for *session_id*, or ``""``."""
-    with sqlite3.connect(DB_PATH) as conn:
-        cur = conn.execute(
-            "SELECT value FROM session_meta WHERE session_id = ? AND key = 'context_summary'",
-            (session_id,),
-        )
-        row = cur.fetchone()
-        return row[0] if row and row[0] else ""
+    return _meta_get(session_id, "context_summary")
+
+
+# ---------------------------------------------------------------------------
+# Turn summary cache  {sha1_hash: summary_text}
+# ---------------------------------------------------------------------------
+
+def save_turn_summaries(session_id: str, cache: dict) -> None:
+    """Persist the full in-memory turn-summary cache for *session_id*."""
+    _meta_set(session_id, "turn_summaries", json.dumps(cache))
+
+
+def load_turn_summaries(session_id: str) -> dict:
+    """Return the stored turn-summary cache, or {} if none exists."""
+    raw = _meta_get(session_id, "turn_summaries")
+    try:
+        return json.loads(raw) if raw else {}
+    except Exception:
+        return {}
+
+
+# ---------------------------------------------------------------------------
+# Task log
+# ---------------------------------------------------------------------------
 
 def save_task_log(session_id: str, task_log: list) -> None:
-    """Persist the task log for a session."""
-    with sqlite3.connect(DB_PATH) as conn:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS task_log (
-                session_id TEXT PRIMARY KEY,
-                entries    TEXT NOT NULL,
-                ts         TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        conn.execute(
-            "INSERT OR REPLACE INTO task_log (session_id, entries) VALUES (?, ?)",
-            (session_id, json.dumps(task_log)),
-        )
-        conn.commit()
+    _meta_set(session_id, "task_log", json.dumps(task_log))
 
 
 def load_task_log(session_id: str) -> list:
-    """Return the persisted task log for session_id, or empty list."""
-    with sqlite3.connect(DB_PATH) as conn:
-        try:
-            cur = conn.execute(
-                "SELECT entries FROM task_log WHERE session_id = ?",
-                (session_id,),
-            )
-            row = cur.fetchone()
-            return json.loads(row[0]) if row else []
-        except sqlite3.OperationalError:
-            return []
+    raw = _meta_get(session_id, "task_log")
+    try:
+        return json.loads(raw) if raw else []
+    except Exception:
+        return []

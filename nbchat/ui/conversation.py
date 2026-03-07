@@ -49,7 +49,8 @@ class ConversationMixin:
 
         # Stall detection: track the set of tool calls made each turn.
         # If the same set repeats STALL_TURNS times, inject a hard interrupt.
-        STALL_TURNS = 3
+        config = lazy_import("nbchat.core.config")
+        STALL_TURNS = config.STALL_TURNS
         _recent_call_sets: list = []
 
         for turn in range(self.MAX_TOOL_TURNS + 1):

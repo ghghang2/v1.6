@@ -54,6 +54,10 @@ _DEFAULTS: Dict[str, Any] = {
     "email_login": "ghghang2@gmail.com",
     "email_to": "ghghang2@gmail.com",
     "max_history_turns": 10,
+    "window_turns": 8,
+    "max_window_rows": 30,
+    "max_exchanges": 50,
+    "keep_recent_exchanges": 30,
     "port": 8000,
     "n_parallel": 1,
     "ctx_size": 16384,
@@ -71,6 +75,8 @@ _DEFAULTS: Dict[str, Any] = {
         "*.out",
     ],
     "SUMMARY_PROMPT": "Write a detailed summary of the conversation above.",
+    "max_tool_turns": 100,
+    "stall_turns": 3,
 }
 
 _cfg: Dict[str, Any] = _load_yaml(_CONFIG_PATH)
@@ -89,6 +95,16 @@ CONTEXT_TOKEN_THRESHOLD: int = int(_cfg["context_len"])
 TAIL_MESSAGES: int = int(_cfg["tail_len"])
 MAX_TOOL_OUTPUT_CHARS: int = int(_cfg["max_tool_output_chars"])
 MAX_HISTORY_TURNS: int = int(_cfg["max_history_turns"])
+
+# Context management constants
+WINDOW_TURNS: int = int(_cfg["window_turns"])
+MAX_WINDOW_ROWS: int = int(_cfg["max_window_rows"])
+MAX_EXCHANGES: int = int(_cfg["max_exchanges"])
+KEEP_RECENT_EXCHANGES: int = int(_cfg["keep_recent_exchanges"])
+
+# Conversation loop constants
+MAX_TOOL_TURNS: int = int(_cfg["max_tool_turns"])
+STALL_TURNS: int = int(_cfg["stall_turns"])
 
 PORT: int = int(_cfg["port"])
 N_PARALLEL: int = int(_cfg["n_parallel"])
@@ -111,6 +127,12 @@ __all__ = [
     "TAIL_MESSAGES",
     "MAX_TOOL_OUTPUT_CHARS",
     "MAX_HISTORY_TURNS",
+    "WINDOW_TURNS",
+    "MAX_WINDOW_ROWS",
+    "MAX_EXCHANGES",
+    "KEEP_RECENT_EXCHANGES",
+    "MAX_TOOL_TURNS",
+    "STALL_TURNS",
     "PORT",
     "N_PARALLEL",
     "CTX_SIZE",
