@@ -522,3 +522,41 @@ The library detects that index 1 and 2 are missing and raises an error.
 - Qwen3.5 9B (known to have this issue)
 - Other quantized models
 - Different tool call patterns (single vs multiple)
+
+## Known Issues Fixed
+
+### 1. Streaming Tool Call Index Mismatch
+**Problem**: When streaming tool calls, the model returns chunks with `index` fields that don't necessarily arrive in order. The original code assumed sequential indices, causing tool calls to be misaligned when multiple tools were called in parallel.
+
+**Solution**: 
+- Changed `tool_buffer: dict[int, dict] = {}` to `tool_buffer: dict = {}` to avoid type annotation issues
+- Used `setdefault` with `tc.index` as the key to properly buffer tool calls
+- Reconstructed the final tool_calls list by sorting indices: `[tool_buffer[i] for i in sorted(tool_buffer)]`
+
+**Files Modified**: `nbchat/ui/conversation.py`
+
+### 2. Type Annotation Compatibility
+**Problem**: The `dict[int, dict]` type annotation was causing issues in certain Python versions or with type checkers.
+
+**Solution**: Changed to `dict = {}` with runtime type checking instead.
+
+## Testing Strategy
+
+### Unit Tests Needed
+1. Test streaming with multiple parallel tool calls
+2. Test tool calls arriving out of order
+3. Test empty tool calls
+4. Test tool calls with content and without content
+
+### Integration Tests Needed
+1. End-to-end conversation with tool calls
+2. Streaming response handling
+3. Error recovery during streaming
+
+## Next Steps
+
+1. **Add Unit Tests**: Create test cases for the streaming logic
+2. **Monitor in Production**: Watch for any edge cases with different models
+3. **Documentation**: Update API documentation to reflect the tool call handling
+4. **Performance**: Measure impact on streaming latency
+
