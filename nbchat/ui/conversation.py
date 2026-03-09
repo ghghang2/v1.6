@@ -151,6 +151,7 @@ class ConversationMixin:
         reasoning_accum = ""
         content_accum = ""
         tool_buffer: dict = {}
+        tool_call_indices: set = set()
         finish_reason = None
 
         self._hard_trim(messages)
