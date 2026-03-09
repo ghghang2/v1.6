@@ -2167,3 +2167,24 @@ prompt eval time =    4914.78 ms /   876 tokens (    5.61 ms per token,   178.24
       total time =   28722.56 ms /  1018 tokens
 slot      release: id  0 | task 14440 | stop processing: n_tokens = 21981, truncated = 0
 srv  update_slots: all slots are idle
+srv  params_from_: Chat format: peg-constructed
+slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.989 (> 0.100 thold), f_keep = 0.994
+slot launch_slot_: id  0 | task -1 | sampler chain: logits -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> ?min-p -> ?xtc -> temp-ext -> dist 
+slot launch_slot_: id  0 | task 14584 | processing task, is_child = 0
+slot update_slots: id  0 | task 14584 | new prompt, n_ctx_slot = 32768, n_keep = 0, task.n_tokens = 22071
+slot update_slots: id  0 | task 14584 | n_past = 21839, slot.prompt.tokens.size() = 21981, seq_id = 0, pos_min = 21980, n_swa = 1
+slot update_slots: id  0 | task 14584 | restored context checkpoint (pos_min = 21327, pos_max = 21327, n_tokens = 21328, size = 149.626 MiB)
+slot update_slots: id  0 | task 14584 | n_tokens = 21328, memory_seq_rm [21328, end)
+slot update_slots: id  0 | task 14584 | prompt processing progress, n_tokens = 21559, batch.n_tokens = 231, progress = 0.976802
+slot update_slots: id  0 | task 14584 | n_tokens = 21559, memory_seq_rm [21559, end)
+slot init_sampler: id  0 | task 14584 | init sampler, took 4.71 ms, tokens: text = 22071, total = 22071
+slot update_slots: id  0 | task 14584 | erasing old context checkpoint (pos_min = 12980, pos_max = 12980, n_tokens = 12981, size = 149.626 MiB)
+slot update_slots: id  0 | task 14584 | created context checkpoint 8 of 8 (pos_min = 21558, pos_max = 21558, n_tokens = 21559, size = 149.626 MiB)
+slot update_slots: id  0 | task 14584 | prompt processing done, n_tokens = 22071, batch.n_tokens = 512
+srv  log_server_r: done request: POST /v1/chat/completions 127.0.0.1 200
+slot print_timing: id  0 | task 14584 | 
+prompt eval time =    4241.40 ms /   743 tokens (    5.71 ms per token,   175.18 tokens per second)
+       eval time =    8732.93 ms /    52 tokens (  167.94 ms per token,     5.95 tokens per second)
+      total time =   12974.34 ms /   795 tokens
+slot      release: id  0 | task 14584 | stop processing: n_tokens = 22122, truncated = 0
+srv  update_slots: all slots are idle
