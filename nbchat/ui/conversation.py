@@ -155,18 +155,10 @@ class ConversationMixin:
         self._hard_trim(messages)
         _sanitize_messages(messages)
 
-        # Disable thinking on tool-continuation turns (any turn where the last
-        # message is a tool result). Qwen3 smaller models get stuck in <think>
-        # and never emit structured tool calls when thinking is active on these
-        # turns. The first turn keeps thinking enabled for initial reasoning.
-        is_tool_continuation = messages[-1].get("role") == "tool"
-        extra_body = {"chat_template_kwargs": {"thinking": not is_tool_continuation}}
-
         try:
             stream = real_client.chat.completions.create(
                 model=self.model_name, messages=messages,
                 stream=True, tools=tools, max_tokens=4096,
-                extra_body=extra_body,
             )
             for chunk in stream:
                 if self._stop_streaming:
