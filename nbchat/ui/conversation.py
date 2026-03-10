@@ -1,6 +1,14 @@
 """Conversation loop mixin for ChatUI.
 
 Handles the agentic tool-calling loop and streaming response.
+
+New in this revision:
+  • L1 Core Memory is updated from the user message at the start of every turn
+    (goal detection + correction detection).
+  • L1 active entities and error history are updated after each tool call.
+  • Every tool exchange is evaluated for importance and written to the L2
+    Episodic Store if it meets the threshold, giving the agent durable recall
+    across context window boundaries.
 """
 from __future__ import annotations
 
@@ -39,6 +47,19 @@ class ConversationMixin:
             ))
 
     def _run_conversation_loop(self, real_client, db, renderer, executor, chat_builder, comp) -> None:
+        # ── L1: update goal from latest user message ──────────────────────
+        # Done before building messages so the very first API call already
+        # has fresh core memory injected via _window().
+        try:
+            last_user = next(
+                (row[1] for row in reversed(self.history) if row[0] == "user"),
+                None,
+            )
+            if last_user:
+                self._update_l1_goal_from_user(last_user)
+        except Exception as exc:
+            _log.debug(f"L1 goal update failed: {exc}")
+
         messages = chat_builder.build_messages(
             self._window(), self.system_prompt, self.task_log
         )
@@ -74,7 +95,7 @@ class ConversationMixin:
                 db.log_message(self.session_id, "assistant", warning)
                 break
 
-            # --- Stall detection ---
+            # ── Stall detection ───────────────────────────────────────────
             turn_calls = frozenset(
                 (tc["function"]["name"], tc["function"]["arguments"])
                 for tc in tool_calls
@@ -95,12 +116,8 @@ class ConversationMixin:
                 messages.append({"role": "user", "content": stall_msg})
                 _recent_call_sets.clear()
 
-            # --- Build assistant message for model history ---
+            # ── Build assistant message for model history ─────────────────
             # content must be None (not "") when tool_calls are present.
-            # Strict OpenAI-compat models (especially smaller ones) mis-read
-            # the conversation state when they see content="" + tool_calls and
-            # emit subsequent tool calls as reasoning text instead of structured
-            # output.
             msg_for_model = {
                 "role": "assistant",
                 "content": content or None,
@@ -108,7 +125,11 @@ class ConversationMixin:
             }
             messages.append(msg_for_model)
 
-            storable_msg = {"role": "assistant", "content": content or None, "tool_calls": tool_calls}
+            storable_msg = {
+                "role": "assistant",
+                "content": content or None,
+                "tool_calls": tool_calls,
+            }
             full_msg_json = json.dumps(storable_msg)
             self.history.append(("assistant_full", "", "full", "full", full_msg_json))
             db.log_row(self.session_id, "assistant_full", "", "full", "full", full_msg_json)
@@ -139,7 +160,28 @@ class ConversationMixin:
                 self._log_action(tool_name, tool_args, model_result)
                 self.history.append(("tool", raw_result, tc["id"], tool_name, tool_args))
                 db.log_tool_msg(self.session_id, tc["id"], tool_name, tool_args, raw_result)
-                messages.append({"role": "tool", "tool_call_id": tc["id"], "content": model_result})
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": tc["id"],
+                    "content": model_result,
+                })
+
+                # ── L1 + L2 update after each tool call ───────────────────
+                # Score this exchange (assistant call + tool result) and:
+                #   • update L1 active entities and error history
+                #   • write to L2 episodic store if importance >= threshold
+                try:
+                    exchange_msgs = [
+                        msg_for_model,
+                        {"role": "tool", "content": model_result},
+                    ]
+                    importance = self._importance_score(exchange_msgs)
+                    self._write_exchange_to_episodic(
+                        turn, tool_name, tool_args, model_result, importance
+                    )
+                    self._update_l1_from_exchange(tool_name, tool_args, model_result)
+                except Exception as exc:
+                    _log.debug(f"L1/L2 post-tool update failed: {exc}")
 
     def _stream_response(self, real_client, messages):
         from nbchat.ui import chat_renderer as renderer
@@ -214,7 +256,9 @@ class ConversationMixin:
 
         if tool_calls:
             if assistant_widget is not None:
-                assistant_widget.value = renderer.render_assistant_with_tools(content_accum, tool_calls).value
+                assistant_widget.value = renderer.render_assistant_with_tools(
+                    content_accum, tool_calls
+                ).value
             else:
                 assistant_widget = renderer.render_assistant_with_tools("", tool_calls)
                 children = list(self.chat_history.children)

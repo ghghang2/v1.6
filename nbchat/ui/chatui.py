@@ -99,11 +99,20 @@ class ChatUI(ContextMixin, ConversationMixin):
     # ------------------------------------------------------------------
 
     def _reset_session_state(self) -> None:
-        """Clear all per-session in-memory state."""
+        """Clear all per-session in-memory state and associated DB rows."""
         self.history = []
         self.task_log = []
         self._seen_calls = {}
         self._turn_summary_cache = {}
+        # Clear L1 core memory and L2 episodic store for the old session so a
+        # new session starts clean.  Wrapped in try/except so a DB error never
+        # prevents session switching.
+        try:
+            db = lazy_import("nbchat.core.db")
+            db.clear_core_memory(self.session_id)
+            db.delete_episodic_for_session(self.session_id)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Widget creation

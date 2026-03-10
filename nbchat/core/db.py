@@ -1,16 +1,21 @@
 """Persist chat history in a lightweight SQLite database.
 
 The database is created in the repository root as ``chat_history.db``.
-Two tables:
+Tables:
   chat_log      — every message row for every session.
   session_meta  — per-session key/value metadata (context summaries,
                   turn summary caches, task logs, etc.).
+  episodic_store — L2 episodic memory: append-only log of tool exchanges
+                   with entity refs and importance scores.
+  core_memory   — L1 typed persistent slots: goal, constraints,
+                  active_entities, error_history, last_correction.
 """
 from __future__ import annotations
 
 import json
 import sqlite3
 from pathlib import Path
+from typing import Any
 
 DB_PATH = Path(__file__).resolve().parent.parent / "chat_history.db"
 
@@ -42,6 +47,33 @@ def init_db() -> None:
                 session_id  TEXT NOT NULL,
                 key         TEXT NOT NULL,
                 value       TEXT,
+                ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                PRIMARY KEY (session_id, key)
+            )
+        """)
+        # ── L2 Episodic store ──────────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS episodic_store (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id      TEXT NOT NULL,
+                turn_id         INTEGER DEFAULT 0,
+                action_type     TEXT DEFAULT '',
+                entity_refs     TEXT DEFAULT '[]',
+                outcome_summary TEXT DEFAULT '',
+                importance_score REAL DEFAULT 1.0,
+                ts              TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ep_session "
+            "ON episodic_store(session_id, importance_score DESC)"
+        )
+        # ── L1 Core Memory ─────────────────────────────────────────────────
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS core_memory (
+                session_id  TEXT NOT NULL,
+                key         TEXT NOT NULL,
+                value       TEXT DEFAULT '',
                 ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 PRIMARY KEY (session_id, key)
             )
@@ -186,3 +218,140 @@ def load_task_log(session_id: str) -> list:
         return json.loads(raw) if raw else []
     except Exception:
         return []
+
+
+# ---------------------------------------------------------------------------
+# L2 Episodic Store
+# ---------------------------------------------------------------------------
+
+def append_episodic(
+    session_id: str,
+    turn_id: int,
+    action_type: str,
+    entity_refs: str,       # JSON-encoded list of strings
+    outcome_summary: str,
+    importance_score: float,
+) -> None:
+    """Append one tool-exchange record to the episodic store."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO episodic_store "
+            "(session_id, turn_id, action_type, entity_refs, outcome_summary, importance_score) "
+            "VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, turn_id, action_type, entity_refs, outcome_summary, importance_score),
+        )
+        conn.commit()
+
+
+def query_episodic_by_entities(
+    session_id: str,
+    entity_refs: list[str],
+    limit: int = 5,
+) -> list[dict]:
+    """Return episodic entries whose entity_refs overlap with *entity_refs*.
+
+    Uses a LIKE search over the JSON-encoded entity_refs column so no JSON
+    extension is required.  Returns rows sorted by importance_score DESC.
+    """
+    if not entity_refs:
+        return []
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        # Build a WHERE clause that checks for any entity match
+        clauses = " OR ".join("entity_refs LIKE ?" for _ in entity_refs)
+        params: list[Any] = [f"%{e}%" for e in entity_refs]
+        params += [session_id, limit]
+        rows = conn.execute(
+            f"SELECT id, turn_id, action_type, entity_refs, outcome_summary, importance_score "
+            f"FROM episodic_store "
+            f"WHERE ({clauses}) AND session_id = ? "
+            f"ORDER BY importance_score DESC "
+            f"LIMIT ?",
+            params,
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def query_episodic_top_importance(
+    session_id: str,
+    min_score: float = 3.0,
+    limit: int = 5,
+) -> list[dict]:
+    """Return the highest-importance episodic entries for *session_id*."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT id, turn_id, action_type, entity_refs, outcome_summary, importance_score "
+            "FROM episodic_store "
+            "WHERE session_id = ? AND importance_score >= ? "
+            "ORDER BY importance_score DESC "
+            "LIMIT ?",
+            (session_id, min_score, limit),
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_episodic_for_session(session_id: str) -> None:
+    """Remove all episodic entries for *session_id* (used on session reset)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "DELETE FROM episodic_store WHERE session_id = ?", (session_id,)
+        )
+        conn.commit()
+
+
+# ---------------------------------------------------------------------------
+# L1 Core Memory
+# ---------------------------------------------------------------------------
+
+_CORE_MEMORY_KEYS = frozenset(
+    {"goal", "constraints", "active_entities", "error_history", "last_correction"}
+)
+
+
+def get_core_memory(session_id: str) -> dict:
+    """Return all core memory slots for *session_id* as a plain dict."""
+    with sqlite3.connect(DB_PATH) as conn:
+        rows = conn.execute(
+            "SELECT key, value FROM core_memory WHERE session_id = ?",
+            (session_id,),
+        ).fetchall()
+    return {k: v for k, v in rows if v}
+
+
+def set_core_memory_key(session_id: str, key: str, value: str) -> None:
+    """Upsert a single core memory slot."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO core_memory (session_id, key, value, ts) "
+            "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+            "ON CONFLICT(session_id, key) "
+            "DO UPDATE SET value=excluded.value, ts=excluded.ts",
+            (session_id, key, value),
+        )
+        conn.commit()
+
+
+def update_core_memory(session_id: str, updates: dict) -> None:
+    """Upsert multiple core memory slots in a single transaction."""
+    if not updates:
+        return
+    with sqlite3.connect(DB_PATH) as conn:
+        for key, value in updates.items():
+            conn.execute(
+                "INSERT INTO core_memory (session_id, key, value, ts) "
+                "VALUES (?, ?, ?, CURRENT_TIMESTAMP) "
+                "ON CONFLICT(session_id, key) "
+                "DO UPDATE SET value=excluded.value, ts=excluded.ts",
+                (session_id, key, str(value)),
+            )
+        conn.commit()
+
+
+def clear_core_memory(session_id: str) -> None:
+    """Delete all core memory entries for *session_id* (used on session reset)."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "DELETE FROM core_memory WHERE session_id = ?", (session_id,)
+        )
+        conn.commit()
