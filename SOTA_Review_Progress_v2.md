@@ -27,9 +27,9 @@ Review the code in nbchat/ folder. Review SOTA_Autonomous_Agent_Review.md docume
 - [ ] Review unrelated but interesting projects
 - [ ] Compile final concepts and ideas for refactoring
 - [ ] Implement high-impact, low-effort improvements
-- [x] Implemented retry policy for tool calls (openclaw-inspired)
-- [x] Added error_flag field for protected exchanges
-- [x] Updated context_manager.py to protect error exchanges during trimming
+- [ ] Implemented retry policy for tool calls (openclaw-inspired)
+- [ ] Added error_flag field for protected exchanges
+- [ ] Updated context_manager.py to protect error exchanges during trimming
 - [ ] Implement action verification mechanism
 
 ### Current Blockers

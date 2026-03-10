@@ -130,11 +130,13 @@ def main() -> None:
                 "--ctx-size",     str(CTX_SIZE),
                 "--n-gpu-layers", str(N_GPU_LAYERS),
                 "--flash-attn", "1",
-                "--temp", "0.6",
-                "--top-p", "0.95",
+                "--temp", "1.0", # 9B reasoning
+                "--top-p", "0.95", # 9B reasoning
+                # "--temp", "0.6", # 27B thinking
+                # "--top-p", "0.95", # 27B thinking
                 "--top-k", "20",
                 "--min-p", "0.0",
-                "--chat-template-kwargs", '{"enable_thinking": true}',
+                "--chat-template-kwargs", '{"enable_thinking": false}', # false for 9B, true for 27B
                 "--cache-type-k", "q8_0", 
                 "--cache-type-v", "q8_0",
                 # "--batch-size", "2048",
