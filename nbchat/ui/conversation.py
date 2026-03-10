@@ -68,7 +68,7 @@ class ConversationMixin:
                 break
 
             if turn == self.MAX_TOOL_TURNS:
-                warning = f"⚠️ Maximum tool turns ({self.MAX_TOOL_TURNS}) reached."
+                warning = f"Maximum tool turns ({self.MAX_TOOL_TURNS}) reached."
                 self._append(renderer.render_assistant(warning))
                 self.history.append(("assistant", warning, "", "", ""))
                 db.log_message(self.session_id, "assistant", warning)
