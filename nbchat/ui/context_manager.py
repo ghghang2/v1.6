@@ -145,11 +145,17 @@ class ContextMixin:
         """Score a tool exchange (list of message dicts) from 0.0–10.0.
 
         Higher score = retain longer under trim pressure.
+        Boosts exchanges marked with error_flag for protection.
         """
         score = 1.0
+        has_error_flag = False
         for msg in exchange_msgs:
             content = (msg.get("content") or "").lower()
             role = msg.get("role", "")
+            # Check for explicit error_flag indicator in message
+            if msg.get("error_flag") == 1 or "error_flag" in msg:
+                has_error_flag = True
+                break
             if any(k in content for k in ("error", "exception", "failed", "cannot", "traceback")):
                 score += 3.0
             if role == "user" and any(
@@ -163,6 +169,9 @@ class ContextMixin:
             # Long tool results are often structurally important
             if role == "tool" and len(content) > 500:
                 score += 0.5
+        # Boost score for exchanges with error_flag (additional 5.0 points)
+        if has_error_flag:
+            score += 5.0
         return min(score, 10.0)
 
     # ── L1 Core Memory ────────────────────────────────────────────────────────

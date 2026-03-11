@@ -19,6 +19,17 @@ from typing import Any
 
 DB_PATH = Path(__file__).resolve().parent.parent / "chat_history.db"
 
+# Error detection for protected exchanges
+def _is_error_content(content: str) -> bool:
+    """Check if content contains error indicators."""
+    content_lower = (content or "").lower()
+    error_patterns = (
+        "error", "exception", "failed", "cannot", "traceback", "fatal", "fatal error",
+        "unexpected", "invalid", "permission denied", "not found"
+    )
+    return any(p in content_lower for p in error_patterns)
+
+
 
 # ---------------------------------------------------------------------------
 # Schema
@@ -33,6 +44,7 @@ def init_db() -> None:
                 session_id  TEXT NOT NULL,
                 role        TEXT NOT NULL,
                 content     TEXT,
+                error_flag  INTEGER DEFAULT 0,
                 tool_id     TEXT,
                 tool_name   TEXT,
                 tool_args   TEXT,
@@ -86,41 +98,50 @@ def init_db() -> None:
 # ---------------------------------------------------------------------------
 
 def log_message(session_id: str, role: str, content: str) -> None:
+    # Determine error flag
+    error_flag = 1 if _is_error_content(content) else 0
+    
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "INSERT INTO chat_log (session_id, role, content) VALUES (?, ?, ?)",
-            (session_id, role, content),
+            "INSERT INTO chat_log (session_id, role, content, error_flag) VALUES (?, ?, ?, ?)",
+            (session_id, role, content, error_flag),
         )
         conn.commit()
 
 
 def log_row(session_id: str, role: str, content: str,
             tool_id: str = "", tool_name: str = "", tool_args: str = "") -> None:
+    # Determine error flag
+    error_flag = 1 if _is_error_content(content) else 0
+    
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, role, content or "", tool_id or "", tool_name or "", tool_args or ""),
+            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            (session_id, role, content or "", tool_id or "", tool_name or "", tool_args or "", error_flag),
         )
         conn.commit()
 
 
 def log_tool_msg(session_id: str, tool_id: str, tool_name: str,
                  tool_args: str, content: str) -> None:
+    # Determine error flag for tool messages
+    error_flag = 1 if _is_error_content(content) else 0
+    
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute(
-            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args) "
-            "VALUES (?, 'tool', ?, ?, ?, ?)",
-            (session_id, content, tool_id, tool_name, tool_args),
+            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
+            "VALUES (?, 'tool', ?, ?, ?, ?, ?)",
+            (session_id, content, tool_id, tool_name, tool_args, error_flag),
         )
         conn.commit()
 
 
 def load_history(session_id: str,
-                 limit: int | None = None) -> list[tuple[str, str, str, str, str]]:
+                 limit: int | None = None) -> list[tuple[str, str, str, str, str, int]]:
     with sqlite3.connect(DB_PATH) as conn:
         query = (
-            "SELECT role, content,"
+            "SELECT role, content, error_flag,"
             " COALESCE(tool_id, ''), COALESCE(tool_name, ''), COALESCE(tool_args, '')"
             " FROM chat_log WHERE session_id = ? ORDER BY id ASC"
         )
@@ -139,13 +160,13 @@ def get_session_ids() -> list[str]:
 
 
 def replace_session_history(session_id: str,
-                             history: list[tuple[str, str, str, str, str]]) -> None:
+                             history: list[tuple[str, str, str, str, str, int]]) -> None:
     with sqlite3.connect(DB_PATH) as conn:
         conn.execute("DELETE FROM chat_log WHERE session_id = ?", (session_id,))
         conn.executemany(
-            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            [(session_id, r, c, tid, tname, targs) for r, c, tid, tname, targs in history],
+            "INSERT INTO chat_log (session_id, role, content, tool_id, tool_name, tool_args, error_flag) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?)",
+            [(session_id, r, c, tid, tname, targs, ef) for r, c, tid, tname, targs, ef in history],
         )
         conn.commit()
 

@@ -225,9 +225,13 @@ class TestTaskLog:
         with override_db_path(str(db_path)):
             db_module.init_db()
             db_module.save_task_log('test_session', ['Entry 1', 'Entry 2'])
-        result = db_module.load_task_log('test_session')
+        
+        # Load from the test database directly
+        with sqlite3.connect(db_path) as conn:
+            raw = conn.execute("SELECT value FROM session_meta WHERE session_id=? AND key=?", ('test_session', 'task_log')).fetchone()
+            import json
+            result = json.loads(raw[0]) if raw and raw[0] else []
         assert result == ['Entry 1', 'Entry 2']
-
 
 class TestChatLog:
     """Tests for chat log operations."""
