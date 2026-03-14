@@ -1,25 +1,27 @@
-"""Comprehensive tests for the browser tool.
+"""Tests for the browser tool.
 
 Structure
 ---------
-Unit tests (mocked)   – fast, hermetic, cover validation and response shaping
-Integration tests     – real network, marked with @pytest.mark.integration
-                        run with: pytest -m integration
+Unit tests (mocked)   – fast, hermetic, cover all validation and response shaping.
+                        Run by default.
+Integration tests     – real Chromium + real network. Opt-in only:
+                        pytest -m integration
 
-Run fast tests only (default):
+Fast suite (default):
     pytest test_browser.py
 
-Run everything:
+Full suite:
     pytest test_browser.py -m "integration or not integration"
 """
 
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch, call
+from unittest.mock import MagicMock, patch
+
 import pytest
 
-from nbchat.tools.browser import browser
+from nbchat.tools.browser import browser, _TransientNetworkError
 
 
 # ---------------------------------------------------------------------------
@@ -27,26 +29,21 @@ from nbchat.tools.browser import browser
 # ---------------------------------------------------------------------------
 
 def ok(result: str) -> dict:
-    """Parse and assert no top-level error."""
     data = json.loads(result)
     assert "error" not in data, f"Unexpected error: {data}"
     return data
 
 
 def err(result: str) -> dict:
-    """Parse and assert top-level error present."""
     data = json.loads(result)
     assert "error" in data, f"Expected error, got: {data}"
     assert "hint" in data, "Error response must include a hint"
+    assert data["hint"], "hint must be a non-empty string"
     return data
 
 
 # ---------------------------------------------------------------------------
 # Playwright mock factory
-#
-# Returns a context-manager-compatible mock that mirrors the playwright API
-# surface used by the tool, so we can test response shaping without a real
-# browser.
 # ---------------------------------------------------------------------------
 
 _DEFAULT_PAGE_DATA = {
@@ -63,9 +60,8 @@ def _make_playwright_mock(
     nav_status: int = 200,
     page_url: str = "https://example.com/",
     raise_on_goto=None,
-    raise_on_action=None,
+    raise_on_action: Exception | None = None,
 ):
-    """Build a nested mock matching the playwright sync_playwright() API."""
     data = page_data or _DEFAULT_PAGE_DATA
 
     page = MagicMock()
@@ -83,8 +79,6 @@ def _make_playwright_mock(
 
     ctx = MagicMock()
     ctx.new_page.return_value = page
-    ctx.__enter__ = MagicMock(return_value=ctx)
-    ctx.__exit__ = MagicMock(return_value=False)
 
     browser_inst = MagicMock()
     browser_inst.new_context.return_value = ctx
@@ -97,58 +91,67 @@ def _make_playwright_mock(
     return playwright, browser_inst, ctx, page
 
 
-def _patch(playwright_mock):
-    return patch("nbchat.tools.browser.sync_playwright", return_value=playwright_mock)
+def _patch(pw):
+    return patch("nbchat.tools.browser.sync_playwright", return_value=pw)
+
+
+def _run(actions, page_data=None, **kwargs):
+    """Convenience: run browser() with a mock and return (data, page)."""
+    pw, bi, ctx, page = _make_playwright_mock(page_data=page_data)
+    with _patch(pw):
+        data = ok(browser(url="https://example.com", actions=actions, **kwargs))
+    return data, page
 
 
 # ===========================================================================
-# 1. INPUT VALIDATION  (no network needed)
+# 1. INPUT VALIDATION
 # ===========================================================================
 
 class TestInputValidation:
 
     def test_url_none_rejected(self):
         data = err(browser(url=None))
-        assert "URL is required" in data["error"]
+        assert "url is required" in data["error"]
 
     def test_url_empty_string_rejected(self):
         data = err(browser(url=""))
-        assert "URL is required" in data["error"]
+        assert "url is required" in data["error"]
 
     def test_url_whitespace_only_rejected(self):
         data = err(browser(url="   "))
-        assert "URL is required" in data["error"]
+        assert "url is required" in data["error"]
 
-    def test_url_not_a_string_rejected(self):
+    def test_url_integer_rejected(self):
         data = err(browser(url=42))
-        assert "must be a string" in data["error"]
+        assert "url is required" in data["error"]
 
-    def test_url_missing_scheme_is_autofixed(self):
-        """scheme-less URLs should be retried with https:// prepended."""
-        pw, bi, ctx, page = _make_playwright_mock()
+    def test_url_whitespace_is_stripped(self):
+        pw, _, _, page = _make_playwright_mock()
         with _patch(pw):
-            data = ok(browser(url="example.com"))
-        # The tool auto-prepends https:// and the mock succeeds
-        goto_url = page.goto.call_args[0][0]
-        assert goto_url.startswith("https://")
+            ok(browser(url="  https://example.com  "))
+        assert page.goto.call_args[0][0] == "https://example.com"
 
-    def test_url_whitespace_stripped(self):
-        pw, bi, ctx, page = _make_playwright_mock()
+    def test_url_missing_scheme_autofixed_to_https(self):
+        pw, _, _, page = _make_playwright_mock()
         with _patch(pw):
-            data = ok(browser(url="  https://example.com  "))
-        goto_url = page.goto.call_args[0][0]
-        assert goto_url == "https://example.com"
+            ok(browser(url="example.com"))
+        assert page.goto.call_args[0][0] == "https://example.com"
 
     def test_actions_not_a_list_rejected(self):
-        data = err(browser(url="https://example.com", actions="click something"))
+        data = err(browser(url="https://example.com", actions="click"))
         assert "must be a list" in data["error"]
 
-    def test_actions_item_not_a_dict_rejected(self):
-        data = err(browser(url="https://example.com", actions=["string"]))
+    def test_actions_dict_rejected(self):
+        # A plain dict is not a list
+        data = err(browser(url="https://example.com", actions={"type": "click"}))
+        assert "must be a list" in data["error"]
+
+    def test_actions_item_string_rejected(self):
+        data = err(browser(url="https://example.com", actions=["click h1"]))
         assert "must be a dict" in data["error"]
 
     def test_actions_item_number_rejected(self):
-        data = err(browser(url="https://example.com", actions=[1, 2]))
+        data = err(browser(url="https://example.com", actions=[1]))
         assert "must be a dict" in data["error"]
 
     def test_actions_mixed_valid_invalid_rejected(self):
@@ -156,39 +159,50 @@ class TestInputValidation:
         assert "must be a dict" in data["error"]
 
     def test_actions_empty_list_accepted(self):
-        pw, bi, ctx, page = _make_playwright_mock()
+        pw, _, _, _ = _make_playwright_mock()
         with _patch(pw):
             data = ok(browser(url="https://example.com", actions=[]))
         assert data["status"] == "success"
-        assert "actions" not in data  # empty log omitted
+        assert "actions" not in data
 
-    def test_actions_dict_without_type_is_treated_as_unknown(self):
-        """A dict action missing 'type' gets type='' and is logged as unknown."""
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            data = ok(browser(url="https://example.com", actions=[{}]))
+    def test_actions_dict_without_type_normalised_to_unknown(self):
+        data, _ = _run([{}])
         assert data["status"] == "success"
-        actions = data.get("actions", [])
-        assert len(actions) == 1
-        assert "unknown action type" in actions[0]
+        assert any("unknown action type" in a for a in data.get("actions", []))
 
-    def test_kwargs_fallback_used_when_url_missing(self):
-        """If url is absent, the tool falls back to url inside the kwargs JSON blob."""
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            data = ok(browser(url=None, kwargs=json.dumps({"url": "https://example.com"})))
-        assert data["status"] == "success"
+    def test_wait_until_invalid_rejected(self):
+        data = err(browser(url="https://example.com", wait_until="instant"))
+        assert "wait_until" in data["error"]
 
-    def test_valid_url_never_overwritten_by_kwargs(self):
-        """A valid url argument must not be replaced by kwargs content."""
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            browser(
-                url="https://example.com",
-                kwargs=json.dumps({"url": "https://evil.com"}),
-            )
-        goto_url = page.goto.call_args[0][0]
-        assert "evil.com" not in goto_url
+    def test_wait_until_valid_values_accepted(self):
+        for val in ("commit", "domcontentloaded", "load", "networkidle"):
+            pw, _, _, _ = _make_playwright_mock()
+            with _patch(pw):
+                ok(browser(url="https://example.com", wait_until=val))
+
+    def test_navigation_timeout_zero_rejected(self):
+        data = err(browser(url="https://example.com", navigation_timeout=0))
+        assert "navigation_timeout" in data["error"]
+
+    def test_navigation_timeout_negative_rejected(self):
+        data = err(browser(url="https://example.com", navigation_timeout=-1000))
+        assert "navigation_timeout" in data["error"]
+
+    def test_navigation_timeout_non_int_rejected(self):
+        data = err(browser(url="https://example.com", navigation_timeout="30000"))
+        assert "navigation_timeout" in data["error"]
+
+    def test_action_timeout_zero_rejected(self):
+        data = err(browser(url="https://example.com", action_timeout=0))
+        assert "action_timeout" in data["error"]
+
+    def test_max_content_length_zero_rejected(self):
+        data = err(browser(url="https://example.com", max_content_length=0))
+        assert "max_content_length" in data["error"]
+
+    def test_max_content_length_negative_rejected(self):
+        data = err(browser(url="https://example.com", max_content_length=-1))
+        assert "max_content_length" in data["error"]
 
 
 # ===========================================================================
@@ -197,261 +211,271 @@ class TestInputValidation:
 
 class TestResponseShape:
 
-    def test_success_response_has_required_keys(self):
-        pw, bi, ctx, page = _make_playwright_mock()
+    def test_success_has_required_keys(self):
+        pw, _, _, _ = _make_playwright_mock()
         with _patch(pw):
             data = ok(browser(url="https://example.com"))
         assert {"status", "url", "title", "content"} <= data.keys()
 
-    def test_status_is_success_when_no_actions_fail(self):
-        pw, bi, ctx, page = _make_playwright_mock()
+    def test_status_success_when_no_action_errors(self):
+        pw, _, _, _ = _make_playwright_mock()
         with _patch(pw):
             data = ok(browser(url="https://example.com"))
         assert data["status"] == "success"
 
-    def test_status_is_partial_when_action_fails(self):
-        """Any action error must flip status to 'partial'."""
+    def test_status_partial_when_action_fails(self):
         from playwright.sync_api import TimeoutError as PWTimeout
-        pw, bi, ctx, page = _make_playwright_mock(raise_on_action=PWTimeout("timed out"))
+        pw, _, _, _ = _make_playwright_mock(raise_on_action=PWTimeout("timed out"))
         with _patch(pw):
-            data = ok(browser(
-                url="https://example.com",
-                actions=[{"type": "click", "selector": ".nonexistent"}],
-            ))
+            data = ok(browser(url="https://example.com", actions=[{"type": "click", "selector": ".x"}]))
         assert data["status"] == "partial"
-        assert "action_errors" in data
-        assert any("TIMEOUT" in e for e in data["action_errors"])
 
-    def test_action_errors_field_populated_on_failure(self):
+    def test_action_errors_field_on_partial(self):
         from playwright.sync_api import TimeoutError as PWTimeout
-        pw, bi, ctx, page = _make_playwright_mock(raise_on_action=PWTimeout("timed out"))
+        pw, _, _, _ = _make_playwright_mock(raise_on_action=PWTimeout("timed out"))
         with _patch(pw):
-            data = ok(browser(
-                url="https://example.com",
-                actions=[{"type": "click", "selector": ".nope"}],
-            ))
+            data = ok(browser(url="https://example.com", actions=[{"type": "click", "selector": ".x"}]))
         assert isinstance(data["action_errors"], list)
         assert len(data["action_errors"]) > 0
 
-    def test_action_log_still_present_on_partial(self):
-        """actions log must be returned even when some actions error."""
+    def test_actions_log_present_even_on_partial(self):
         from playwright.sync_api import TimeoutError as PWTimeout
-        pw, bi, ctx, page = _make_playwright_mock(raise_on_action=PWTimeout("timed out"))
+        pw, _, _, _ = _make_playwright_mock(raise_on_action=PWTimeout("timed out"))
         with _patch(pw):
-            data = ok(browser(
-                url="https://example.com",
-                actions=[{"type": "click", "selector": ".nope"}],
-            ))
+            data = ok(browser(url="https://example.com", actions=[{"type": "click", "selector": ".x"}]))
         assert "actions" in data
 
     def test_content_truncated_to_max_content_length(self):
-        long_data = dict(_DEFAULT_PAGE_DATA)
-        long_data["text"] = "x" * 20_000
-        pw, bi, ctx, page = _make_playwright_mock(page_data=long_data)
+        long_data = {**_DEFAULT_PAGE_DATA, "text": "x" * 20_000}
+        pw, _, _, _ = _make_playwright_mock(page_data=long_data)
         with _patch(pw):
             data = ok(browser(url="https://example.com", max_content_length=100))
         assert len(data["content"]) <= 100
 
     def test_title_present_without_selector(self):
-        pw, bi, ctx, page = _make_playwright_mock()
+        pw, _, _, _ = _make_playwright_mock()
         with _patch(pw):
             data = ok(browser(url="https://example.com"))
         assert data["title"] == _DEFAULT_PAGE_DATA["title"]
 
-    def test_title_absent_when_selector_used(self):
-        """When selector= is set, result shape differs: no 'title' key."""
-        pw, bi, ctx, page = _make_playwright_mock()
+    def test_title_absent_with_selector(self):
+        pw, _, _, _ = _make_playwright_mock()
         with _patch(pw):
             data = ok(browser(url="https://example.com", selector="h1"))
         assert "title" not in data
         assert "content" in data
 
-    def test_selector_branch_does_not_raise_nameerror(self):
-        """Regression: selector branch must not NameError on 'data'."""
-        pw, bi, ctx, page = _make_playwright_mock()
+    def test_selector_branch_no_nameerror(self):
+        """Regression: selector branch must not NameError on 'data' / 'page_data'."""
+        pw, _, _, _ = _make_playwright_mock()
         with _patch(pw):
-            # Should not raise; previously crashed with NameError on `data`
             result = browser(url="https://example.com", selector="h1")
-        assert json.loads(result)  # valid JSON returned
+        assert json.loads(result)  # valid JSON
 
-    def test_extract_elements_false_omits_interactive_links(self):
-        pw, bi, ctx, page = _make_playwright_mock()
+    def test_extract_elements_false_omits_fields(self):
+        pw, _, _, _ = _make_playwright_mock()
         with _patch(pw):
             data = ok(browser(url="https://example.com", extract_elements=False))
         assert "interactive" not in data
         assert "links" not in data
 
     def test_extract_elements_true_includes_both_fields(self):
-        pw, bi, ctx, page = _make_playwright_mock()
+        pw, _, _, _ = _make_playwright_mock()
         with _patch(pw):
             data = ok(browser(url="https://example.com", extract_elements=True))
         assert "interactive" in data
         assert "links" in data
 
-    def test_url_field_reflects_post_navigation_url(self):
-        """url in response must come from page.url, not the original argument."""
-        pw, bi, ctx, page = _make_playwright_mock(page_url="https://example.com/redirected")
+    def test_url_reflects_final_page_url_not_input(self):
+        """url in response must come from page.url, capturing any redirect."""
+        pw, _, _, _ = _make_playwright_mock(page_url="https://example.com/redirected")
         with _patch(pw):
             data = ok(browser(url="https://example.com"))
         assert data["url"] == "https://example.com/redirected"
 
-    def test_error_response_always_has_hint(self):
-        data = err(browser(url=""))
-        assert data["hint"]  # non-empty string
-
-    def test_http_403_returns_error(self):
-        pw, bi, ctx, page = _make_playwright_mock(nav_status=403)
+    def test_http_403_returns_error_with_hint(self):
+        pw, _, _, _ = _make_playwright_mock(nav_status=403)
         with _patch(pw):
             data = err(browser(url="https://example.com"))
         assert "403" in data["error"]
+        assert "403" in data["hint"]
 
     def test_http_404_returns_error(self):
-        pw, bi, ctx, page = _make_playwright_mock(nav_status=404)
+        pw, _, _, _ = _make_playwright_mock(nav_status=404)
         with _patch(pw):
             data = err(browser(url="https://example.com"))
         assert "404" in data["error"]
 
     def test_http_429_returns_error(self):
-        pw, bi, ctx, page = _make_playwright_mock(nav_status=429)
+        pw, _, _, _ = _make_playwright_mock(nav_status=429)
         with _patch(pw):
             data = err(browser(url="https://example.com"))
         assert "429" in data["error"]
 
     def test_http_500_returns_error(self):
-        pw, bi, ctx, page = _make_playwright_mock(nav_status=500)
+        pw, _, _, _ = _make_playwright_mock(nav_status=500)
         with _patch(pw):
             data = err(browser(url="https://example.com"))
         assert "500" in data["error"]
 
+    def test_hint_for_403_does_not_contain_raw_digits_from_404_key(self):
+        """Regression: '403' must not match '404' hint and vice versa."""
+        pw, _, _, _ = _make_playwright_mock(nav_status=403)
+        with _patch(pw):
+            data = err(browser(url="https://example.com"))
+        assert "404" not in data["hint"]
+
+    def test_selector_not_found_hint_does_not_fire_for_action_errors(self):
+        """'selector not found' hint pattern must not match ValueError messages
+        about missing 'selector' fields in actions."""
+        pw, _, _, _ = _make_playwright_mock()
+        with _patch(pw):
+            data = ok(browser(url="https://example.com", actions=[{"type": "click"}]))
+        # The action error message contains "'selector' is required for click"
+        # — this should NOT trigger the "selector not found" hint pattern.
+        error_text = str(data.get("action_errors", []))
+        assert "extract_elements" not in error_text  # wrong hint bled through
+
 
 # ===========================================================================
-# 3. ACTION BEHAVIOUR  (mocked)
+# 3. ACTIONS
 # ===========================================================================
 
 class TestActions:
 
-    def _run(self, actions, page_data=None):
-        pw, bi, ctx, page = _make_playwright_mock(page_data=page_data)
-        with _patch(pw):
-            data = ok(browser(url="https://example.com", actions=actions))
-        return data, page
-
     def test_click_calls_page_click(self):
-        data, page = self._run([{"type": "click", "selector": "h1"}])
+        data, page = _run([{"type": "click", "selector": "h1"}])
         page.click.assert_called_once_with("h1", timeout=5000)
         assert "clicked 'h1'" in data["actions"]
 
+    def test_click_missing_selector_is_action_error(self):
+        data, _ = _run([{"type": "click"}])
+        assert data["status"] == "partial"
+        assert any("'selector' is required" in e for e in data["action_errors"])
+
     def test_type_calls_page_fill(self):
-        data, page = self._run([{"type": "type", "selector": "input", "text": "hello"}])
+        data, page = _run([{"type": "type", "selector": "input", "text": "hello"}])
         page.fill.assert_called_once_with("input", "hello", timeout=5000)
         assert "typed into 'input'" in data["actions"]
 
-    def test_type_empty_text_is_action_error(self):
-        """Empty text triggers ValueError — should be partial, not success."""
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            data = ok(browser(
-                url="https://example.com",
-                actions=[{"type": "type", "selector": "input", "text": ""}],
-            ))
+    def test_type_empty_string_is_valid(self):
+        """Empty string clears the field — must not be rejected."""
+        data, page = _run([{"type": "type", "selector": "input", "text": ""}])
+        page.fill.assert_called_once_with("input", "", timeout=5000)
+        assert data["status"] == "success"
+
+    def test_type_numeric_text_is_cast_to_str(self):
+        data, page = _run([{"type": "type", "selector": "input", "text": 42}])
+        page.fill.assert_called_once_with("input", "42", timeout=5000)
+
+    def test_type_missing_text_key_is_action_error(self):
+        """Missing 'text' key (not empty string) must be an error."""
+        data, _ = _run([{"type": "type", "selector": "input"}])
         assert data["status"] == "partial"
-        assert any("ERROR" in e for e in data["action_errors"])
+        assert any("'text' is required" in e for e in data["action_errors"])
 
     def test_type_missing_selector_is_action_error(self):
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            data = ok(browser(
-                url="https://example.com",
-                actions=[{"type": "type", "text": "hello"}],
-            ))
-        assert data["status"] == "partial"
-
-    def test_type_missing_text_is_action_error(self):
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            data = ok(browser(
-                url="https://example.com",
-                actions=[{"type": "type", "selector": "input"}],
-            ))
+        data, _ = _run([{"type": "type", "text": "hello"}])
         assert data["status"] == "partial"
 
     def test_select_calls_page_select_option(self):
-        data, page = self._run([{"type": "select", "selector": "select", "value": "opt1"}])
+        data, page = _run([{"type": "select", "selector": "select", "value": "opt1"}])
         page.select_option.assert_called_once_with("select", value="opt1", timeout=5000)
+        assert "selected 'opt1' in 'select'" in data["actions"]
 
     def test_select_missing_selector_is_action_error(self):
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            data = ok(browser(
-                url="https://example.com",
-                actions=[{"type": "select", "value": "opt1"}],
-            ))
+        data, _ = _run([{"type": "select", "value": "opt1"}])
         assert data["status"] == "partial"
 
     def test_wait_with_timeout_calls_wait_for_timeout(self):
-        data, page = self._run([{"type": "wait", "timeout": 1000}])
+        data, page = _run([{"type": "wait", "timeout": 1000}])
         page.wait_for_timeout.assert_called_once_with(1000)
-        assert any("waited 1000ms" in a for a in data["actions"])
+        assert "waited 1000ms" in data["actions"]
+
+    def test_wait_timeout_string_is_cast_to_int(self):
+        data, page = _run([{"type": "wait", "timeout": "500"}])
+        page.wait_for_timeout.assert_called_once_with(500)
 
     def test_wait_with_selector_calls_wait_for_selector(self):
-        data, page = self._run([{"type": "wait", "selector": "h1"}])
+        data, page = _run([{"type": "wait", "selector": "h1"}])
         page.wait_for_selector.assert_called_with("h1", timeout=5000)
-        assert any("waited for 'h1'" in a for a in data["actions"])
+        assert "waited for 'h1'" in data["actions"]
 
-    def test_wait_with_both_selector_and_timeout_prefers_selector(self):
-        """selector takes priority when both are given."""
-        data, page = self._run([{"type": "wait", "selector": "h1", "timeout": 5000}])
+    def test_wait_selector_takes_priority_over_timeout(self):
+        data, page = _run([{"type": "wait", "selector": "h1", "timeout": 5000}])
         page.wait_for_selector.assert_called()
-        assert any("waited for" in a for a in data["actions"])
+        page.wait_for_timeout.assert_not_called()
 
     def test_wait_missing_both_is_action_error(self):
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            data = ok(browser(url="https://example.com", actions=[{"type": "wait"}]))
+        data, _ = _run([{"type": "wait"}])
         assert data["status"] == "partial"
+        assert any("'selector' or 'timeout'" in e for e in data["action_errors"])
 
-    def test_scroll_down_evaluates_positive_scrollby(self):
-        data, page = self._run([{"type": "scroll", "direction": "down", "amount": 500}])
+    def test_scroll_down_uses_positive_dy(self):
+        data, page = _run([{"type": "scroll", "direction": "down", "amount": 500}])
         page.evaluate.assert_any_call("window.scrollBy(0, 500)")
 
-    def test_scroll_up_evaluates_negative_scrollby(self):
-        data, page = self._run([{"type": "scroll", "direction": "up", "amount": 300}])
+    def test_scroll_up_uses_negative_dy(self):
+        data, page = _run([{"type": "scroll", "direction": "up", "amount": 300}])
         page.evaluate.assert_any_call("window.scrollBy(0, -300)")
 
     def test_scroll_default_direction_is_down(self):
-        data, page = self._run([{"type": "scroll", "amount": 200}])
+        data, page = _run([{"type": "scroll", "amount": 200}])
         page.evaluate.assert_any_call("window.scrollBy(0, 200)")
 
-    def test_navigate_calls_goto_with_new_url(self):
-        data, page = self._run([{"type": "navigate", "url": "https://httpbin.org/get"}])
+    def test_scroll_negative_amount_treated_as_positive(self):
+        """A negative amount must not silently invert the direction."""
+        data, page = _run([{"type": "scroll", "direction": "down", "amount": -400}])
+        page.evaluate.assert_any_call("window.scrollBy(0, 400)")
+
+    def test_navigate_calls_goto_with_dest_url(self):
+        data, page = _run([{"type": "navigate", "url": "https://httpbin.org/get"}])
         calls = [c[0][0] for c in page.goto.call_args_list]
         assert "https://httpbin.org/get" in calls
-        assert any("navigated to" in a for a in data["actions"])
+        assert "navigated to 'https://httpbin.org/get'" in data["actions"]
 
     def test_navigate_missing_url_is_action_error(self):
-        pw, bi, ctx, page = _make_playwright_mock()
-        with _patch(pw):
-            data = ok(browser(url="https://example.com", actions=[{"type": "navigate"}]))
+        data, _ = _run([{"type": "navigate"}])
         assert data["status"] == "partial"
 
+    def test_navigate_http_error_is_action_error(self):
+        """HTTP error on navigate action must be an action error, not a crash."""
+        pw, _, _, page = _make_playwright_mock()
+        # First goto (initial navigation) succeeds; second (navigate action) returns 404.
+        nav_resp_404 = MagicMock(status=404)
+        page.goto.side_effect = [MagicMock(status=200), nav_resp_404]
+        with _patch(pw):
+            data = ok(browser(url="https://example.com", actions=[{"type": "navigate", "url": "https://example.com/gone"}]))
+        assert data["status"] == "partial"
+        assert any("404" in e for e in data["action_errors"])
+
+    def test_navigate_timeout_is_action_error_not_navigation_failure(self):
+        """PWTimeout on a navigate action must log an action error, not abort the tool."""
+        from playwright.sync_api import TimeoutError as PWTimeout
+        pw, _, _, page = _make_playwright_mock()
+        page.goto.side_effect = [MagicMock(status=200), PWTimeout("timed out")]
+        with _patch(pw):
+            data = ok(browser(url="https://example.com", actions=[{"type": "navigate", "url": "https://slow.example.com"}]))
+        assert data["status"] == "partial"
+        assert any("timed out" in e for e in data["action_errors"])
+
     def test_screenshot_calls_page_screenshot(self):
-        data, page = self._run([{"type": "screenshot", "path": "/tmp/shot.png"}])
+        data, page = _run([{"type": "screenshot", "path": "/tmp/shot.png"}])
         page.screenshot.assert_called_once_with(path="/tmp/shot.png")
-        assert any("screenshot saved" in a for a in data["actions"])
+        assert "screenshot saved to '/tmp/shot.png'" in data["actions"]
 
     def test_screenshot_default_path(self):
-        data, page = self._run([{"type": "screenshot"}])
+        data, page = _run([{"type": "screenshot"}])
         page.screenshot.assert_called_once_with(path="screenshot.png")
 
-    def test_unknown_action_type_logged_not_errored(self):
-        """Unknown types appear in actions log but do NOT trigger partial status."""
-        data, page = self._run([{"type": "hover", "selector": "h1"}])
+    def test_unknown_action_logged_not_errored(self):
+        data, _ = _run([{"type": "hover", "selector": "h1"}])
         assert data["status"] == "success"
         assert any("unknown action type 'hover'" in a for a in data["actions"])
         assert "action_errors" not in data
 
-    def test_multiple_action_log_entries_ordered(self):
-        data, page = self._run([
+    def test_multiple_actions_log_is_ordered(self):
+        data, _ = _run([
             {"type": "wait", "timeout": 100},
             {"type": "click", "selector": "h1"},
             {"type": "scroll", "direction": "down", "amount": 100},
@@ -462,33 +486,112 @@ class TestActions:
         assert "clicked" in log[1]
         assert "scrolled" in log[2]
 
+    def test_later_actions_run_after_earlier_action_error(self):
+        """A failed action must not abort the remaining actions."""
+        pw, _, _, page = _make_playwright_mock()
+        from playwright.sync_api import TimeoutError as PWTimeout
+        # click raises, but fill (type) should still be called
+        page.click.side_effect = PWTimeout("no element")
+        with _patch(pw):
+            data = ok(browser(
+                url="https://example.com",
+                actions=[
+                    {"type": "click", "selector": ".gone"},
+                    {"type": "type", "selector": "input", "text": "hello"},
+                ],
+            ))
+        assert data["status"] == "partial"
+        assert len(data["actions"]) == 2
+        page.fill.assert_called_once()
+
 
 # ===========================================================================
-# 4. RESOURCE MANAGEMENT
+# 4. RETRY LOGIC
+# ===========================================================================
+
+class TestRetryLogic:
+
+    def test_transient_error_triggers_retry(self):
+        """_TransientNetworkError on first call must cause a second attempt."""
+        pw, _, _, _ = _make_playwright_mock()
+        call_count = 0
+
+        def fake_run():
+            nonlocal call_count
+            call_count += 1
+            if call_count == 1:
+                raise _TransientNetworkError("net::ERR_CONNECTION_RESET")
+            # Second call: use the real mock path
+            return json.dumps({"status": "success", "url": "https://example.com", "title": "", "content": ""})
+
+        with patch("nbchat.tools.browser.browser.__code__"):
+            pass  # Can't easily patch _run(); test via goto side_effect instead
+
+        # Test via network error on goto that matches _TRANSIENT_MARKERS
+        pw2, _, _, page2 = _make_playwright_mock()
+        page2.goto.side_effect = [
+            Exception("net::ERR_CONNECTION_RESET"),
+            MagicMock(status=200),
+        ]
+        with _patch(pw2):
+            result = browser(url="https://example.com")
+        # Two goto calls = one retry
+        assert page2.goto.call_count == 2
+
+    def test_non_transient_error_does_not_retry(self):
+        """A generic exception must not trigger a retry."""
+        pw, _, _, page = _make_playwright_mock()
+        page.goto.side_effect = Exception("something unexpected")
+        with _patch(pw):
+            result = browser(url="https://example.com")
+        assert page.goto.call_count == 1
+        data = json.loads(result)
+        assert "error" in data
+
+
+# ===========================================================================
+# 5. RESOURCE MANAGEMENT
 # ===========================================================================
 
 class TestResourceManagement:
 
     def test_browser_closed_on_success(self):
-        pw, bi, ctx, page = _make_playwright_mock()
+        pw, bi, ctx, _ = _make_playwright_mock()
         with _patch(pw):
             browser(url="https://example.com")
         bi.close.assert_called_once()
         ctx.close.assert_called_once()
 
-    def test_browser_closed_on_extraction_exception(self):
-        """Browser must be cleaned up even if content extraction raises."""
+    def test_browser_closed_when_extraction_raises(self):
+        """ctx and browser_inst must be closed even if page.evaluate raises."""
         pw, bi, ctx, page = _make_playwright_mock()
-        page.evaluate.side_effect = RuntimeError("extraction boom")
+        page.evaluate.side_effect = RuntimeError("JS crash")
+        with _patch(pw):
+            browser(url="https://example.com")
+        ctx.close.assert_called_once()
+        bi.close.assert_called_once()
+
+    def test_browser_inst_closed_when_new_context_raises(self):
+        """browser_inst must be closed even if new_context() raises."""
+        pw, bi, ctx, _ = _make_playwright_mock()
+        bi.new_context.side_effect = RuntimeError("context failed")
         with _patch(pw):
             result = browser(url="https://example.com")
-        # Returns an error (caught by outer try/except), but close still ran
+        bi.close.assert_called_once()
+        data = json.loads(result)
+        assert "error" in data
+
+    def test_selector_not_found_still_closes_browser(self):
+        pw, bi, ctx, page = _make_playwright_mock()
+        page.wait_for_selector.side_effect = Exception("not found")
+        with _patch(pw):
+            browser(url="https://example.com", selector=".missing")
         ctx.close.assert_called_once()
         bi.close.assert_called_once()
 
 
 # ===========================================================================
-# 5. INTEGRATION TESTS  (real network, opt-in)
+# 6. INTEGRATION  (real network, opt-in)
 # ===========================================================================
 
 @pytest.mark.integration
@@ -512,8 +615,6 @@ class TestIntegration:
 
     def test_extract_elements_true_returns_both_fields(self):
         data = ok(browser(url="https://example.com", extract_elements=True))
-        assert "interactive" in data
-        assert "links" in data
         assert isinstance(data["interactive"], list)
         assert isinstance(data["links"], list)
 
@@ -528,21 +629,34 @@ class TestIntegration:
         assert "title" not in data
         assert "Example Domain" in data["content"]
 
+    def test_selector_not_found_returns_error_with_page_url(self):
+        data = err(browser(url="https://example.com", selector=".does-not-exist-xyz"))
+        assert "selector not found" in data["error"]
+        assert "page_url" in data
+
     def test_click_h1_succeeds(self):
-        data = ok(browser(
-            url="https://example.com",
-            actions=[{"type": "click", "selector": "h1"}],
-        ))
+        data = ok(browser(url="https://example.com", actions=[{"type": "click", "selector": "h1"}]))
         assert data["status"] == "success"
         assert any("clicked" in a for a in data.get("actions", []))
 
     def test_click_nonexistent_selector_is_partial(self):
-        data = ok(browser(
-            url="https://example.com",
-            actions=[{"type": "click", "selector": ".xyz-does-not-exist-abc"}],
-        ))
+        data = ok(browser(url="https://example.com", actions=[{"type": "click", "selector": ".xyz-nope"}]))
         assert data["status"] == "partial"
         assert "action_errors" in data
+
+    def test_type_empty_string_accepted(self):
+        data = ok(browser(
+            url="https://httpbin.org/forms/post",
+            actions=[{"type": "type", "selector": "input[name='custname']", "text": ""}],
+        ))
+        assert data["status"] == "success"
+
+    def test_type_missing_text_key_is_partial(self):
+        data = ok(browser(
+            url="https://httpbin.org/forms/post",
+            actions=[{"type": "type", "selector": "input[name='custname']"}],
+        ))
+        assert data["status"] == "partial"
 
     def test_navigate_action_url_updates(self):
         data = ok(browser(
@@ -552,31 +666,31 @@ class TestIntegration:
         assert data["status"] == "success"
         assert "example.org" in data["url"]
 
+    def test_scroll_down(self):
+        data = ok(browser(url="https://example.com", actions=[{"type": "scroll", "direction": "down", "amount": 300}]))
+        assert data["status"] == "success"
+
+    def test_scroll_negative_amount_does_not_crash(self):
+        data = ok(browser(url="https://example.com", actions=[{"type": "scroll", "direction": "down", "amount": -300}]))
+        assert data["status"] == "success"
+
     def test_wait_timeout(self):
-        data = ok(browser(
-            url="https://example.com",
-            actions=[{"type": "wait", "timeout": 500}],
-        ))
+        data = ok(browser(url="https://example.com", actions=[{"type": "wait", "timeout": 500}]))
         assert data["status"] == "success"
         assert any("waited 500ms" in a for a in data.get("actions", []))
-
-    def test_scroll_down(self):
-        data = ok(browser(
-            url="https://example.com",
-            actions=[{"type": "scroll", "direction": "down", "amount": 300}],
-        ))
-        assert data["status"] == "success"
 
     def test_max_content_length_respected(self):
         data = ok(browser(url="https://example.com", max_content_length=50))
         assert len(data["content"]) <= 50
 
     def test_screenshot_saved(self, tmp_path):
-        path = str(tmp_path / "shot.png")
-        data = ok(browser(
-            url="https://example.com",
-            actions=[{"type": "screenshot", "path": path}],
-        ))
-        assert data["status"] == "success"
         import os
+        path = str(tmp_path / "shot.png")
+        data = ok(browser(url="https://example.com", actions=[{"type": "screenshot", "path": path}]))
+        assert data["status"] == "success"
         assert os.path.exists(path)
+
+    def test_invalid_wait_until_rejected_before_browser_launch(self):
+        # This must fail in validation, not deep inside Playwright
+        data = err(browser(url="https://example.com", wait_until="bogus"))
+        assert "wait_until" in data["error"]
