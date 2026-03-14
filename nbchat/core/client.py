@@ -1,96 +1,108 @@
-# from openai import OpenAI
-# from .config import SERVER_URL
-# def get_client() -> OpenAI:
-#     """Return a client that talks to the local OpenAI‑compatible server."""
-#     return OpenAI(base_url=f"{SERVER_URL}/v1", api_key="")
 import logging
 import time
 from openai import OpenAI
 from .config import SERVER_URL
 
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s"
-)
+_handler = logging.FileHandler("inference_metrics.log")
+_handler.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s"))
 logger = logging.getLogger("Inference_Metrics")
+logger.setLevel(logging.INFO)
+logger.addHandler(_handler)
+logger.propagate = False  # don't bubble up to root logger / console
 
-class MetricsLoggingClient:
-    """A wrapper around the OpenAI client to log metrics for both standard and streaming chat completions."""
-    def __init__(self, client: OpenAI):
-        self._client = client
-        self.chat = self._ChatWrapper(client.chat)
 
-    def __getattr__(self, name):
-        # Delegate all other calls to the original client
-        return getattr(self._client, name)
+class _InterceptedStream:
+    """Proxies an OpenAI Stream, intercepting iteration to log metrics."""
 
-    class _ChatWrapper:
-        def __init__(self, chat):
-            self._chat = chat
-            self.completions = self._CompletionsWrapper(chat.completions)
+    def __init__(self, stream, start_time):
+        self._stream = stream
+        self._start_time = start_time
 
-    class _CompletionsWrapper:
-        def __init__(self, completions):
-            self._completions = completions
-
-        def _stream_generator(self, stream, start_time):
-            """Internal generator to intercept stream chunks and log final metrics."""
-            ttft = None
-            usage = None
-            
-            for chunk in stream:
-                # Capture Time to First Token (TTFT) on the very first chunk
-                if ttft is None:
-                    ttft = time.time() - start_time
-                    logger.info(f"Metrics | Time to First Token (TTFT): {ttft:.3f}s")
-                
-                # Check if this chunk contains usage data
-                if hasattr(chunk, 'usage') and chunk.usage is not None:
+    def __iter__(self):
+        ttft = None
+        usage = None
+        try:
+            for chunk in self._stream:
+                if ttft is None and chunk.choices and chunk.choices[0].delta.content:
+                    ttft = time.time() - self._start_time
+                    logger.info("Metrics | TTFT: %.3fs", ttft)
+                if getattr(chunk, "usage", None):
                     usage = chunk.usage
-                    
+                if not chunk.choices:  # usage-only sentinel chunk — our instrumentation artefact, don't leak it
+                    continue
                 yield chunk
-                
-            total_time = time.time() - start_time
-            
-            # Log final usage once the stream is fully consumed
+        except Exception as e:
+            logger.error("Metrics | Stream error after %.2fs: %s", time.time() - self._start_time, e)
+            raise
+        finally:
+            total = time.time() - self._start_time
             if usage:
                 logger.info(
-                    f"Metrics | Total Stream Latency: {total_time:.2f}s | "
-                    f"Prompt: {usage.prompt_tokens} | "
-                    f"Completion: {usage.completion_tokens} | "
-                    f"Total Tokens: {usage.total_tokens}"
+                    "Metrics | Stream latency: %.2fs | Prompt: %d | Completion: %d | Total: %d",
+                    total, usage.prompt_tokens, usage.completion_tokens, usage.total_tokens,
                 )
             else:
-                logger.warning(f"Metrics | Total Stream Latency: {total_time:.2f}s | No usage data returned in stream.")
+                logger.warning("Metrics | Stream latency: %.2fs | No usage data.", total)
 
-        def create(self, *args, **kwargs):
-            is_streaming = kwargs.get("stream", False)
-            
-            # Instruct the server to send usage data in the final stream chunk
-            if is_streaming and "stream_options" not in kwargs:
-                kwargs["stream_options"] = {"include_usage": True}
+    def __enter__(self):
+        self._stream.__enter__()
+        return self
 
-            start_time = time.time()
+    def __exit__(self, *args):
+        return self._stream.__exit__(*args)
+
+    def __getattr__(self, name):
+        return getattr(self._stream, name)
+
+
+class _CompletionsWrapper:
+    def __init__(self, completions):
+        self._completions = completions
+
+    def create(self, *args, **kwargs):
+        if kwargs.get("stream"):
+            kwargs.setdefault("stream_options", {})
+            kwargs["stream_options"].setdefault("include_usage", True)
+
+        start_time = time.time()
+        try:
             response = self._completions.create(*args, **kwargs)
-            
-            if is_streaming:
-                # Return our intercepted generator instead of the raw stream
-                return self._stream_generator(response, start_time)
-            else:
-                # Handle standard (non-streaming) responses
-                latency = time.time() - start_time
-                if hasattr(response, 'usage') and response.usage:
-                    u = response.usage
-                    logger.info(
-                        f"Metrics | Latency: {latency:.2f}s | "
-                        f"Prompt: {u.prompt_tokens} | "
-                        f"Completion: {u.completion_tokens} | "
-                        f"Total Tokens: {u.total_tokens}"
-                    )
-                return response
+        except Exception as e:
+            logger.error("Metrics | Request failed after %.2fs: %s", time.time() - start_time, e)
+            raise
+
+        if kwargs.get("stream"):
+            return _InterceptedStream(response, start_time)
+
+        latency = time.time() - start_time
+        u = getattr(response, "usage", None)
+        if u:
+            logger.info(
+                "Metrics | Latency: %.2fs | Prompt: %d | Completion: %d | Total: %d",
+                latency, u.prompt_tokens, u.completion_tokens, u.total_tokens,
+            )
+        else:
+            logger.warning("Metrics | Latency: %.2fs | No usage data.", latency)
+        return response
+
+
+class _ChatWrapper:
+    def __init__(self, chat):
+        self._chat = chat
+        self.completions = _CompletionsWrapper(chat.completions)
+
+    def __getattr__(self, name):
+        return getattr(self._chat, name)
+
+
+class MetricsLoggingClient:
+    def __init__(self, client: OpenAI):
+        self._client = client
+        self.chat = _ChatWrapper(client.chat)
+
+    def __getattr__(self, name):
+        return getattr(self._client, name)
+
 
 def get_client() -> MetricsLoggingClient:
-    """Return a client that talks to the local server and logs metrics."""
-    base_client = OpenAI(base_url=f"{SERVER_URL}/v1", api_key="sk-local")
-    return MetricsLoggingClient(base_client)
+    return MetricsLoggingClient(OpenAI(base_url=f"{SERVER_URL}/v1", api_key="sk-local"))
