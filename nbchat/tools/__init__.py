@@ -13,7 +13,7 @@ import pkgutil
 import importlib
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Dict, List
+from typing import Any, Callable, Dict, List, Union
 
 # ----- Schema generator -------------------------------------------------
 def _generate_schema(func: Callable) -> Dict[str, Any]:
@@ -22,15 +22,46 @@ def _generate_schema(func: Callable) -> Dict[str, Any]:
     required: List[str] = []
     for name, param in sig.parameters.items():
         ann = param.annotation
+
         if ann is inspect._empty:
             ann_type = "string"
-        elif ann in (int, float, complex):
-            ann_type = "number"
         else:
-            ann_type = "string"
+            # Unwrap Optional[X] and Union[X, None] → X before type checking.
+            # Optional[X] is just Union[X, None] under the hood, so both are
+            # handled by stripping out NoneType and taking the first real arg.
+            origin = getattr(ann, "__origin__", None)
+            if origin is Union:
+                real_args = [a for a in ann.__args__ if a is not type(None)]
+                ann = real_args[0] if real_args else ann
+                origin = getattr(ann, "__origin__", None)
+
+            # Map to JSON Schema types
+            if origin in (list,):
+                ann_type = "array"
+            elif origin in (dict,):
+                ann_type = "object"
+            elif ann in (int,):
+                ann_type = "integer"
+            elif ann in (float,):
+                ann_type = "float"
+            elif ann in (bool,):
+                ann_type = "boolean"
+            elif ann in (str,):
+                ann_type = "string"
+            elif isinstance(ann, str):
+                if ann in ("int", "float"):
+                    ann_type = "number"
+                elif ann == "bool":
+                    ann_type = "boolean"
+                else:
+                    ann_type = "string"
+            else:
+                ann_type = "string"
+
         properties[name] = {"type": ann_type}
         if param.default is inspect._empty:
             required.append(name)
+
     return {
         "parameters": {
             "type": "object",

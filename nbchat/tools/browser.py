@@ -10,12 +10,10 @@ Design principles (informed by Browser-Use, Stagehand, Browserbase research):
 - Single retry on transient network errors before giving up
 """
 
-from __future__ import annotations
-
 import json
 import random
 import re
-from typing import Any
+from typing import Any, Dict, List, Optional
 
 from playwright.sync_api import sync_playwright, TimeoutError as PWTimeout
 
@@ -92,7 +90,7 @@ _JS_EXTRACT = """
 # positives — e.g. "4030 records processed" would otherwise match "403".
 # "selector not found" is specific enough not to match action ValueError
 # messages such as "'selector' is required for click".
-_HINT_PATTERNS: list[tuple[str, str]] = [
+_HINT_PATTERNS: List[tuple[str, str]] = [
     ("net::ERR_NAME_NOT_RESOLVED",   "The domain could not be resolved. Check the URL for typos or try a different URL."),
     ("net::ERR_CONNECTION_REFUSED",  "The server refused the connection. The site may be down or blocking automated access."),
     ("net::ERR_CONNECTION_TIMED_OUT","Connection timed out. Try again, increase navigation_timeout, or the site may be blocking bots."),
@@ -113,7 +111,7 @@ def _hint(msg: str) -> str:
     return "Try a different URL, check network connectivity, or simplify the request."
 
 
-def _err(message: str, hint: str | None = None, **extra) -> str:
+def _err(message: str, hint: Optional[str] = None, **extra) -> str:
     """Return a JSON error envelope.
 
     Callers may supply a custom hint; otherwise one is derived from the message
@@ -141,8 +139,8 @@ class _TransientNetworkError(Exception):
 
 def browser(
     url: str,
-    actions: list[dict[str, Any]] | None = None,
-    selector: str | None = None,
+    actions: Optional[List[Dict[str, Any]]] = None,
+    selector: Optional[str] = None,
     extract_elements: bool = False,
     navigation_timeout: int = 30000,
     action_timeout: int = 5000,
@@ -317,8 +315,8 @@ def browser(
                         return _err(f"HTTP {status} from {url}")
 
                     # ── Actions ────────────────────────────────────────────
-                    log: list[str] = []
-                    action_errors: list[str] = []
+                    log: List[str] = []
+                    action_errors: List[str] = []
 
                     for i, act in enumerate(actions or []):
                         act_type = act.get("type", "")
@@ -420,13 +418,13 @@ def browser(
                                 f"selector not found: '{selector}'",
                                 page_url=final_url,
                             )
-                        result: dict[str, Any] = {
+                        result: Dict[str, Any] = {
                             "status": "partial" if action_errors else "success",
                             "url": final_url,
                             "content": content[:max_content_length],
                         }
                     else:
-                        page_data: dict = page.evaluate(_JS_EXTRACT)
+                        page_data: Dict[str, Any] = page.evaluate(_JS_EXTRACT)
                         result = {
                             "status": "partial" if action_errors else "success",
                             "url": final_url,
