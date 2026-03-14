@@ -192,6 +192,19 @@ class TestInputValidation:
         data = err(browser(url="https://example.com", navigation_timeout="30000"))
         assert "navigation_timeout" in data["error"]
 
+    def test_navigation_timeout_bool_rejected(self):
+        # bool is a subclass of int; True == 1 would otherwise pass as a 1ms timeout
+        data = err(browser(url="https://example.com", navigation_timeout=True))
+        assert "navigation_timeout" in data["error"]
+
+    def test_action_timeout_bool_rejected(self):
+        data = err(browser(url="https://example.com", action_timeout=True))
+        assert "action_timeout" in data["error"]
+
+    def test_max_content_length_bool_rejected(self):
+        data = err(browser(url="https://example.com", max_content_length=True))
+        assert "max_content_length" in data["error"]
+
     def test_action_timeout_zero_rejected(self):
         data = err(browser(url="https://example.com", action_timeout=0))
         assert "action_timeout" in data["error"]
@@ -203,6 +216,14 @@ class TestInputValidation:
     def test_max_content_length_negative_rejected(self):
         data = err(browser(url="https://example.com", max_content_length=-1))
         assert "max_content_length" in data["error"]
+
+    def test_actions_without_type_does_not_mutate_caller_dict(self):
+        """Validation must not add keys to the caller's action dicts."""
+        act = {"selector": "h1"}  # no "type" key
+        pw, _, _, _ = _make_playwright_mock()
+        with _patch(pw):
+            browser(url="https://example.com", actions=[act])
+        assert "type" not in act, "Validation must not mutate caller's action dict"
 
 
 # ===========================================================================

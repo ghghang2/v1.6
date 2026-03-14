@@ -65,7 +65,7 @@ _JS_EXTRACT = """
     const body = document.body || document.documentElement;
     const clone = body.cloneNode(true);
     clone.querySelectorAll('script,style,noscript,svg').forEach(n => n.remove());
-    const text = clone.innerText.replace(/[ \t]{2,}/g, ' ').replace(/\n{3,}/g, '\n\n').trim();
+    const text = clone.innerText.replace(/[ \\t]{2,}/g, ' ').replace(/\\n{3,}/g, '\\n\\n').trim();
 
     return {
         title: document.title,
@@ -239,21 +239,23 @@ def browser(
                     f"actions[{i}] must be a dict, got {type(act).__name__}.",
                     hint='Each action must be a dict with a "type" key.',
                 )
-            if "type" not in act:
-                act["type"] = ""  # normalise; will be logged as "unknown" at runtime
+            # No mutation needed: act.get("type", "") in the action loop
+            # already handles a missing "type" key without modifying caller data.
 
     if wait_until not in _VALID_WAIT_UNTIL:
         return _err(
             f"wait_until must be one of {sorted(_VALID_WAIT_UNTIL)}, got {wait_until!r}.",
         )
 
-    if not isinstance(navigation_timeout, int) or navigation_timeout <= 0:
+    # bool is a subclass of int in Python, so isinstance(True, int) is True.
+    # Exclude it explicitly — a boolean timeout is never intentional.
+    if isinstance(navigation_timeout, bool) or not isinstance(navigation_timeout, int) or navigation_timeout <= 0:
         return _err("navigation_timeout must be a positive integer (milliseconds).")
 
-    if not isinstance(action_timeout, int) or action_timeout <= 0:
+    if isinstance(action_timeout, bool) or not isinstance(action_timeout, int) or action_timeout <= 0:
         return _err("action_timeout must be a positive integer (milliseconds).")
 
-    if not isinstance(max_content_length, int) or max_content_length <= 0:
+    if isinstance(max_content_length, bool) or not isinstance(max_content_length, int) or max_content_length <= 0:
         return _err("max_content_length must be a positive integer.")
 
     # =========================================================================
