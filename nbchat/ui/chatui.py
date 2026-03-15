@@ -43,9 +43,9 @@ class ChatUI(ContextMixin, ConversationMixin):
         self.model_name = config.MODEL_NAME
 
         self.session_id = str(uuid.uuid4())
-        self.history: List[Tuple[str, str, int, str, str, str]] = []
+        # Canonical row shape: (role, content, tool_id, tool_name, tool_args, error_flag)
+        self.history: List[Tuple[str, str, str, str, str, int]] = []
         self.task_log: List[str] = []
-        self._seen_calls: dict = {}
         self._turn_summary_cache: dict = {}
 
         self._stop_streaming = False
@@ -102,7 +102,6 @@ class ChatUI(ContextMixin, ConversationMixin):
         """Clear all per-session in-memory state and associated DB rows."""
         self.history = []
         self.task_log = []
-        self._seen_calls = {}
         self._turn_summary_cache = {}
         # Clear L1 core memory and L2 episodic store for the old session so a
         # new session starts clean.  Wrapped in try/except so a DB error never
@@ -245,23 +244,23 @@ class ChatUI(ContextMixin, ConversationMixin):
         db = lazy_import("nbchat.core.db")
         self.history = list(db.load_history(self.session_id))
         self.task_log = db.load_task_log(self.session_id)
-        self._seen_calls = {}
         self._turn_summary_cache = db.load_turn_summaries(self.session_id)
         self._render_history()
 
     def _render_history(self):
         """Render the windowed slice of history into the chat panel."""
-        window = self._window()
-        hidden_count = len(self.history) - len(window)
+        window, effective_cut = self._window()
 
+        # effective_cut is the number of self.history rows excluded from the
+        # window — the exact count for the "omitted messages" notice.
         children = []
-        if hidden_count > 0:
+        if effective_cut > 0:
             children.append(renderer.render_system(
-                f"[{hidden_count} earlier messages are outside the context "
+                f"[{effective_cut} earlier messages are outside the context "
                 f"window and have been omitted from this view.]"
             ))
 
-        for role, content, error_flag, tool_id, tool_name, tool_args in window:
+        for role, content, tool_id, tool_name, tool_args, _error_flag in window:
             if role == "user":
                 children.append(renderer.render_user(content))
             elif role == "analysis":
@@ -279,7 +278,7 @@ class ChatUI(ContextMixin, ConversationMixin):
                 except Exception:
                     children.append(renderer.render_assistant(content))
             elif role == "tool":
-                children.append(renderer.render_tool(content, tool_name, tool_args))
+                children.append(renderer.render_tool(content, tool_name, str(tool_args)))
             elif role == "system":
                 children.append(renderer.render_system(content))
 
@@ -353,7 +352,8 @@ class ChatUI(ContextMixin, ConversationMixin):
         # Prune before appending the new message — scroll reset is acceptable
         # here since the user just submitted input and expects to see the bottom.
         self._prune_widgets()
-        self.history.append(("user", user_input, "", "", ""))
+        # Canonical 6-tuple: error_flag=0 for user messages
+        self.history.append(("user", user_input, "", "", "", 0))
         self._append(renderer.render_user(user_input))
         db.log_message(self.session_id, "user", user_input)
 

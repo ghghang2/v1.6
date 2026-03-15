@@ -2,13 +2,14 @@
 
 Handles the agentic tool-calling loop and streaming response.
 
-New in this revision:
   • L1 Core Memory is updated from the user message at the start of every turn
     (goal detection + correction detection).
   • L1 active entities and error history are updated after each tool call.
-  • Every tool exchange is evaluated for importance and written to the L2
-    Episodic Store if it meets the threshold, giving the agent durable recall
-    across context window boundaries.
+  • Every tool exchange is scored for importance against the raw (uncompressed)
+    tool output and written to the L2 Episodic Store if it meets the threshold,
+    giving the agent durable recall across context window boundaries.
+  • Stall-detection interrupt messages are persisted to history and the DB so
+    the model's subsequent response has a valid preceding user message.
 """
 from __future__ import annotations
 
@@ -20,11 +21,20 @@ import logging
 _log = logging.getLogger("nbchat.compaction")
 
 
+def _is_error_content(content: str) -> bool:
+    """Return True if *content* contains common error signal keywords."""
+    content_lower = (content or "").lower()
+    return any(p in content_lower for p in (
+        "error", "exception", "failed", "cannot", "traceback",
+        "fatal", "unexpected", "invalid", "permission denied", "not found",
+    ))
+
+
 class ConversationMixin:
     """Mixed into ChatUI — expects self.history, self.task_log,
     self.system_prompt, self.model_name, self.session_id,
     self._stop_streaming, self._append, self._hard_trim,
-    self._log_action, self._window, self._seen_calls, and all
+    self._log_action, self._window, and all
     renderer/executor/chat_builder imports to be available."""
 
     def _process_conversation_turn(self) -> None:
@@ -60,8 +70,10 @@ class ConversationMixin:
         except Exception as exc:
             _log.debug(f"L1 goal update failed: {exc}")
 
+        # _window() returns (window_rows, effective_cut); only rows needed here.
+        window, _cut = self._window()
         messages = chat_builder.build_messages(
-            self._window(), self.system_prompt, self.task_log
+            window, self.system_prompt, self.task_log
         )
         for msg in messages:
             msg.pop("reasoning_content", None)
@@ -79,19 +91,20 @@ class ConversationMixin:
             )
 
             if reasoning:
-                self.history.append(("analysis", reasoning, "", "", ""))
+                # analysis rows are display-only; error_flag not meaningful here
+                self.history.append(("analysis", reasoning, "", "", "", 0))
                 db.log_message(self.session_id, "analysis", reasoning)
 
             if not tool_calls or finish_reason != "tool_calls":
                 if content:
-                    self.history.append(("assistant", content, "", "", ""))
+                    self.history.append(("assistant", content, "", "", "", 0))
                     db.log_message(self.session_id, "assistant", content)
                 break
 
             if turn == self.MAX_TOOL_TURNS:
                 warning = f"Maximum tool turns ({self.MAX_TOOL_TURNS}) reached."
                 self._append(renderer.render_assistant(warning))
-                self.history.append(("assistant", warning, "", "", ""))
+                self.history.append(("assistant", warning, "", "", "", 0))
                 db.log_message(self.session_id, "assistant", warning)
                 break
 
@@ -113,6 +126,10 @@ class ConversationMixin:
                     "not yet attempted."
                 )
                 _log.debug("stall detected — injecting interrupt")
+                # Persist so the DB doesn't contain an orphaned assistant
+                # response with no preceding user message.
+                self.history.append(("user", stall_msg, "", "", "", 0))
+                db.log_message(self.session_id, "user", stall_msg)
                 messages.append({"role": "user", "content": stall_msg})
                 _recent_call_sets.clear()
 
@@ -131,13 +148,13 @@ class ConversationMixin:
                 "tool_calls": tool_calls,
             }
             full_msg_json = json.dumps(storable_msg)
-            self.history.append(("assistant_full", "", "full", "full", full_msg_json))
+            # assistant_full rows don't have a meaningful error_flag
+            self.history.append(("assistant_full", "", "full", "full", full_msg_json, 0))
             db.log_row(self.session_id, "assistant_full", "", "full", "full", full_msg_json)
 
             for tc in tool_calls:
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
-                call_key = (tool_name, tool_args)
 
                 raw_result = executor.run_tool(tool_name, tool_args)
                 self._append(renderer.render_tool(raw_result, tool_name, tool_args))
@@ -147,7 +164,7 @@ class ConversationMixin:
                     model=self.model_name,
                     client=real_client,
                 )
-                
+
                 model_result = (
                     f"[{tool_name}: no relevant output]"
                     if compressed.strip() == "NO_RELEVANT_OUTPUT"
@@ -155,8 +172,13 @@ class ConversationMixin:
                 )
 
                 self._log_action(tool_name, tool_args, model_result)
-                self.history.append(("tool", raw_result, tc["id"], tool_name, tool_args))
+
+                # Compute error_flag from raw output before compression may
+                # have stripped error signals.
+                error_flag = 1 if _is_error_content(raw_result) else 0
+                self.history.append(("tool", raw_result, tc["id"], tool_name, tool_args, error_flag))
                 db.log_tool_msg(self.session_id, tc["id"], tool_name, tool_args, raw_result)
+
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc["id"],
@@ -164,15 +186,14 @@ class ConversationMixin:
                 })
 
                 # ── L1 + L2 update after each tool call ───────────────────
-                # Score this exchange (assistant call + tool result) and:
-                #   • update L1 active entities and error history
-                #   • write to L2 episodic store if importance >= threshold
+                # Score against raw_result so error signals are not missed if
+                # the compressor stripped them from model_result.
                 try:
                     exchange_msgs = [
                         msg_for_model,
                         {"role": "tool", "content": model_result},
                     ]
-                    importance = self._importance_score(exchange_msgs)
+                    importance = self._importance_score(exchange_msgs, raw_result=raw_result)
                     self._write_exchange_to_episodic(
                         turn, tool_name, tool_args, model_result, importance
                     )
@@ -200,7 +221,6 @@ class ConversationMixin:
                 stream=True, tools=tools, max_tokens=4096,
             )
             for chunk in stream:
-                _log.debug(f"RAW CHUNK: {chunk.model_dump_json()}")
                 if self._stop_streaming:
                     stream.close()
                     break
@@ -245,23 +265,10 @@ class ConversationMixin:
                     f"  content_accum length: {len(content_accum)}\n"
                     f"  reasoning_accum length: {len(reasoning_accum)}"
                 )
-                # temporarily re-raise so we see the full traceback
                 raise
             else:
                 _log.debug(f"_stream_response failed: {type(exc).__name__}: {exc}", exc_info=True)
                 raise
-        # except Exception as exc:
-        #     # The OpenAI SDK streaming validator raises APIError("Invalid diff:
-        #     # now finding less tool calls!") when llama.cpp emits tool call
-        #     # delta chunks in a format that appears inconsistent — this happens
-        #     # specifically when thinking=False is active. By the time this fires
-        #     # the tool_buffer is already fully populated, so treat it as a
-        #     # normal end-of-stream rather than a hard failure.
-        #     if "now finding less tool calls" in str(exc):
-        #         _log.debug("suppressed SDK streaming diff error — tool_buffer complete")
-        #     else:
-        #         _log.debug(f"_stream_response failed: {type(exc).__name__}: {exc}", exc_info=True)
-        #         raise
 
         tool_calls = [tool_buffer[i] for i in sorted(tool_buffer)] if tool_buffer else None
 

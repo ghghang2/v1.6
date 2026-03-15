@@ -3,10 +3,12 @@ from __future__ import annotations
 
 import json
 from typing import List, Dict, Tuple
+import logging
 
+_log = logging.getLogger("nbchat.compaction")
 
 def build_messages(
-    history: List[Tuple[str, str, int, str, str, str]],
+    history: List[Tuple[str, str, str, str, str, int]],
     system_prompt: str,
     task_log: List[str] | None = None,
 ) -> List[Dict]:
@@ -15,8 +17,9 @@ def build_messages(
     Parameters
     ----------
     history:
-        List of tuples ``(role, content, tool_id, tool_name, tool_args)``.
-        Should already be pre-windowed to the last N user turns.
+        List of canonical 6-tuples:
+        ``(role, content, tool_id, tool_name, tool_args, error_flag)``.
+        Should already be pre-windowed (via _window()) to the last N user turns.
     system_prompt:
         The system message to prepend.
     task_log:
@@ -40,6 +43,9 @@ def build_messages(
     conversation content (which should not happen in normal operation but
     could surface in legacy DB rows) is converted to a user-role context
     note so the constraint is never violated.
+
+    ``analysis`` rows are reasoning traces — display-only, never sent to the
+    model.  They are silently skipped here.
     """
     system_content = system_prompt
     if task_log:
@@ -70,7 +76,7 @@ def build_messages(
                 # System row appearing after conversation content — demote to
                 # a labelled user context note to satisfy the server constraint.
                 non_system_history.append(
-                    ("_context_note", content, row[2], row[3], row[4])
+                    ("_context_note", content, row[2], row[3], row[4], row[5])
                 )
             else:
                 non_system_history.append(row)
@@ -81,10 +87,10 @@ def build_messages(
     messages: List[Dict] = [{"role": "system", "content": system_content}]
 
     for row in non_system_history:
-        # row format: (role, content, error_flag, tool_id, tool_name, tool_args)
-        # Note: error_flag is stored in the database for UI rendering but
-        # is not needed for message building; we unpack only the fields we use.
-        role, content, _, tool_id, tool_name, tool_args = row
+        # Canonical 6-tuple: (role, content, tool_id, tool_name, tool_args, error_flag)
+        # error_flag is used by the UI and importance scorer but is not sent to the model.
+        role, content, tool_id, tool_name, tool_args, _error_flag = row
+
         if role == "user":
             messages.append({"role": "user", "content": content})
 
@@ -124,7 +130,8 @@ def build_messages(
                 "tool_call_id": tool_id,
                 "content": content,
             })
-        # "analysis" rows are reasoning traces — UI display only, not sent to model.
+
+        # "analysis" rows are reasoning traces — display-only, not sent to model.
 
     return messages
 

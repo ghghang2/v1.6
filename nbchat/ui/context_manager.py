@@ -18,6 +18,9 @@ awareness across ultra-long agentic loops:
                            those above L2_WRITE_THRESHOLD are persisted to
                            the L2 episodic store before being dropped from
                            the hot context.
+
+Row shape (canonical 6-tuple, used throughout):
+    (role: str, content: str, tool_id: str, tool_name: str, tool_args: str, error_flag: int)
 """
 from __future__ import annotations
 
@@ -30,11 +33,13 @@ from typing import List, Optional, Tuple
 from nbchat.core.utils import lazy_import
 
 _log = logging.getLogger("nbchat.compaction")
-_Row = Tuple[str, str, int, str, str, str]
+
+# Canonical history row type — must match db.load_history column order.
+_Row = Tuple[str, str, str, str, str, int]
 
 # ── Tuning knobs ──────────────────────────────────────────────────────────────
-# Minimum importance score to persist an exchange to L2 before eviction.
-L2_WRITE_THRESHOLD = 3.5
+# Lowered from 3.5: successful completions now score ~2.5 and will be persisted.
+L2_WRITE_THRESHOLD = 2.0
 # Max episodic entries injected per API call.
 L2_RETRIEVAL_LIMIT = 5
 # Minimum importance score for L2 entries retrieved by importance (not entity match).
@@ -88,20 +93,16 @@ def _extract_entities(text: str) -> List[str]:
     Returns a deduplicated list capped at 10 entries.
     """
     entities: List[str] = []
-    # Source-code and config file paths
     for m in re.finditer(
         r'\b[\w\-./]+\.(?:py|js|ts|jsx|tsx|json|yaml|yml|txt|md|html|'
         r'css|sh|env|cfg|ini|toml|sql|csv|lock|log)\b',
         text,
     ):
         entities.append(m.group())
-    # API / URL paths  (e.g. /api/v1/users)
     for m in re.finditer(r'(?<!\w)/[a-z][a-z0-9_/\-]{2,40}', text):
         entities.append("api:" + m.group()[:50])
-    # Bare hostnames from URLs
     for m in re.finditer(r'https?://([^/\s"\']{4,60})', text):
         entities.append("url:" + m.group(1))
-    # Deduplicate preserving insertion order, cap at 10
     seen: set = set()
     result: List[str] = []
     for e in entities:
@@ -141,37 +142,53 @@ class ContextMixin:
     # ── Importance scoring ────────────────────────────────────────────────────
 
     @staticmethod
-    def _importance_score(exchange_msgs: list) -> float:
+    def _importance_score(exchange_msgs: list, raw_result: str = "") -> float:
         """Score a tool exchange (list of message dicts) from 0.0–10.0.
 
-        Higher score = retain longer under trim pressure.
-        Boosts exchanges marked with error_flag for protection.
+        Parameters
+        ----------
+        exchange_msgs:
+            API-format message dicts for the exchange (assistant call + tool
+            result(s)).  May contain compressed content.
+        raw_result:
+            The uncompressed tool output string.  Used to detect error signals
+            before compression may have stripped them.  Pass "" when not
+            available (e.g. during hard-trim where only API dicts are present).
+
+        Higher score = retain longer under trim pressure / more likely to be
+        persisted to the L2 episodic store.
         """
         score = 1.0
-        has_error_flag = False
+
+        # Check raw output first — compression can strip error keywords.
+        raw_lower = raw_result.lower()
+        if any(k in raw_lower for k in ("error", "exception", "failed", "cannot", "traceback")):
+            score += 3.0
+
+        has_tool_result = False
         for msg in exchange_msgs:
             content = (msg.get("content") or "").lower()
             role = msg.get("role", "")
-            # Check for explicit error_flag indicator in message
-            if msg.get("error_flag") == 1 or "error_flag" in msg:
-                has_error_flag = True
-                break
-            if any(k in content for k in ("error", "exception", "failed", "cannot", "traceback")):
-                score += 3.0
+
+            if role == "tool":
+                has_tool_result = True
+                # Additional bump when compressed output also shows error.
+                if any(k in content for k in ("error", "exception", "failed", "cannot", "traceback")):
+                    score += 1.5
+                if any(k in content for k in ("success", "completed", "done", "created", "written")):
+                    score += 1.5
+                if len(content) > 500:
+                    score += 0.5
+
             if role == "user" and any(
                 k in content for k in ("correct", "wrong", "actually", "instead", "don't")
             ):
                 score += 2.5
-            if role == "tool" and any(
-                k in content for k in ("success", "completed", "done", "created", "written")
-            ):
-                score += 1.5
-            # Long tool results are often structurally important
-            if role == "tool" and len(content) > 500:
-                score += 0.5
-        # Boost score for exchanges with error_flag (additional 5.0 points)
-        if has_error_flag:
-            score += 5.0
+
+        # Any exchange that produced a tool result is worth tracking.
+        if has_tool_result:
+            score += 1.0
+
         return min(score, 10.0)
 
     # ── L1 Core Memory ────────────────────────────────────────────────────────
@@ -250,7 +267,6 @@ class ContextMixin:
                 existing = json.loads(cm.get("active_entities", "[]"))
             except Exception:
                 existing = []
-            # Merge new entities at the front (most recent = most relevant)
             merged = list(dict.fromkeys(new_entities + existing))
             merged = merged[:CORE_MEMORY_ACTIVE_ENTITIES_LIMIT]
             updates: dict = {"active_entities": json.dumps(merged)}
@@ -283,7 +299,6 @@ class ContextMixin:
             entries: List[dict] = []
             seen_ids: set = set()
 
-            # 1) Entity-match retrieval
             if active_entities:
                 matched = db.query_episodic_by_entities(
                     self.session_id, active_entities, limit=L2_RETRIEVAL_LIMIT
@@ -292,7 +307,6 @@ class ContextMixin:
                     seen_ids.add(e["id"])
                     entries.append(e)
 
-            # 2) Top-importance fill if under limit
             if len(entries) < L2_RETRIEVAL_LIMIT:
                 remaining = L2_RETRIEVAL_LIMIT - len(entries)
                 top = db.query_episodic_top_importance(
@@ -361,8 +375,14 @@ class ContextMixin:
 
     # ── Sliding window ────────────────────────────────────────────────────────
 
-    def _window(self) -> List[_Row]:
-        """Return the bounded slice of history sent to the model.
+    def _window(self) -> Tuple[List[_Row], int]:
+        """Return (window_rows, effective_cut).
+
+        window_rows: prefix context rows + bounded history slice, all as
+            canonical 6-tuples, ready for build_messages.
+        effective_cut: number of self.history rows excluded from the window.
+            Used by _render_history for the "N earlier messages omitted" notice
+            and by _build_prior_context to know exactly which rows to summarize.
 
         Prepends up to three context system rows:
           1. L1 Core Memory block  (always, if non-empty)
@@ -372,7 +392,7 @@ class ContextMixin:
         config = lazy_import("nbchat.core.config")
         MAX_WINDOW_ROWS = config.MAX_WINDOW_ROWS
 
-        # ── Sliding window cut ──
+        # ── L0 Sliding window cut ────────────────────────────────────────────
         user_count = 0
         cut = 0
         for i in range(len(self.history) - 1, -1, -1):
@@ -383,21 +403,38 @@ class ContextMixin:
                     break
 
         window = list(self.history[cut:])
+        effective_cut = cut
 
-        if len(window) > MAX_WINDOW_ROWS:
-            start = len(window) - MAX_WINDOW_ROWS
-            while start < len(window) and window[start][0] != "user":
-                start += 1
-            if start < len(window):
-                window = window[start:]
+        # ── Secondary trim: budget counts only non-analysis rows ─────────────
+        # "analysis" rows are reasoning traces — display-only, dropped by
+        # build_messages, must not consume the MAX_WINDOW_ROWS budget.
+        non_analysis_count = sum(1 for r in window if r[0] != "analysis")
+        if non_analysis_count > MAX_WINDOW_ROWS:
+            # Walk backwards through window to find the start index that
+            # leaves exactly MAX_WINDOW_ROWS non-analysis rows remaining.
+            keep = 0
+            secondary_start = 0
+            for i in range(len(window) - 1, -1, -1):
+                if window[i][0] != "analysis":
+                    keep += 1
+                if keep == MAX_WINDOW_ROWS:
+                    secondary_start = i
+                    break
+            # Advance forward to the next user row so we never orphan the
+            # tail of an exchange by cutting mid-turn.
+            while secondary_start < len(window) and window[secondary_start][0] != "user":
+                secondary_start += 1
+            if secondary_start < len(window):
+                effective_cut = cut + secondary_start
+                window = window[secondary_start:]
 
-        # ── Build context prefix ──
+        # ── Build context prefix ─────────────────────────────────────────────
         prefix: List[_Row] = []
 
         # L1 Core Memory
         l1_block = self._get_l1_block()
         if l1_block:
-            prefix.append(("system", l1_block, "", "", ""))
+            prefix.append(("system", l1_block, "", "", "", 0))
 
         # L2 Episodic retrieval (use active entities from L1 to guide query)
         try:
@@ -408,15 +445,16 @@ class ContextMixin:
             active_entities = []
         l2_block = self._get_l2_block(active_entities)
         if l2_block:
-            prefix.append(("system", l2_block, "", "", ""))
+            prefix.append(("system", l2_block, "", "", "", 0))
 
-        # Structured prior context summaries
-        if cut > 0:
-            prior = self._build_prior_context(self.history[:cut])
+        # Structured prior context — covers everything excluded from the window,
+        # including rows trimmed by the secondary MAX_WINDOW_ROWS pass.
+        if effective_cut > 0:
+            prior = self._build_prior_context(self.history[:effective_cut])
             if prior:
-                prefix.append(("system", prior, "", "", ""))
+                prefix.append(("system", prior, "", "", "", 0))
 
-        return prefix + window
+        return prefix + window, effective_cut
 
     # ── Per-turn structured summarisation ────────────────────────────────────
 
@@ -476,13 +514,14 @@ class ContextMixin:
         from nbchat.core import client as _client_mod
         from nbchat.ui.chat_builder import build_messages
 
-        trimmed = [
+        # Unpack canonical 6-tuples; truncate tool output to stay within budget.
+        trimmed: List[_Row] = [
             (
                 role,
                 content[:_SUMMARIZER_TOOL_CHARS] if role == "tool" else content,
-                tid, tname, targs,
+                tid, tname, targs, ef,
             )
-            for role, content, tid, tname, targs in unit
+            for role, content, tid, tname, targs, ef in unit
         ]
 
         messages = build_messages(trimmed, self.system_prompt)
@@ -560,6 +599,7 @@ class ContextMixin:
             return result
 
         def drop_least_important(exchanges: List[Tuple[int, int]]) -> None:
+            # No raw_result available here — score on compressed API dict content.
             scored = [
                 (self._importance_score(messages[s:e]), s, e)
                 for s, e in exchanges
@@ -569,16 +609,13 @@ class ContextMixin:
 
             # ── L2 write-before-drop ──
             if score >= L2_WRITE_THRESHOLD:
-                # Resolve tool name from the assistant message's first tool call
                 action_name = ""
                 tc_list = messages[s].get("tool_calls") or []
                 if tc_list:
                     action_name = tc_list[0].get("function", {}).get("name", "")
-                # Resolve tool args
                 tc_args = ""
                 if tc_list:
                     tc_args = tc_list[0].get("function", {}).get("arguments", "")
-                # Collect tool results
                 for j in range(s + 1, e):
                     if messages[j].get("role") == "tool":
                         result_text = messages[j].get("content", "")

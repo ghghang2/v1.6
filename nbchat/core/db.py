@@ -141,8 +141,8 @@ def load_history(session_id: str,
                  limit: int | None = None) -> list[tuple[str, str, int, str, str, str]]:
     with sqlite3.connect(DB_PATH) as conn:
         query = (
-            "SELECT role, content, error_flag,"
-            " COALESCE(tool_id, ''), COALESCE(tool_name, ''), COALESCE(tool_args, '')"
+            "SELECT role, content,"
+            " COALESCE(tool_id, ''), COALESCE(tool_name, ''), COALESCE(tool_args, ''), error_flag"
             " FROM chat_log WHERE session_id = ? ORDER BY id ASC"
         )
         params: list = [session_id]

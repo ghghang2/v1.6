@@ -13,7 +13,9 @@ from typing import Any, Dict, List
 import ipywidgets as widgets
 
 from nbchat.ui.utils import md_to_html
+import logging
 
+_log = logging.getLogger("nbchat.compaction")
 # ---------------------------------------------------------------------------
 # Theme
 # ---------------------------------------------------------------------------
@@ -118,6 +120,7 @@ def tool_result_html(content: str, tool_name: str = "", preview: str = "", tool_
     label = f"<b>{html.escape(tool_name)}</b>" if tool_name else "<b>Tool</b>"
     summary = label
     if tool_args:
+        _log.debug(f"tool_args: {tool_args}")
         summary += f"|{html.escape(tool_args)}"
     summary += f"|{html.escape(preview)}"
     inner = (
