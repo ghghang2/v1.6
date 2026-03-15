@@ -30,7 +30,7 @@ from typing import List, Optional, Tuple
 from nbchat.core.utils import lazy_import
 
 _log = logging.getLogger("nbchat.compaction")
-_Row = Tuple[str, str, str, str, str]
+_Row = Tuple[str, str, int, str, str, str]
 
 # ── Tuning knobs ──────────────────────────────────────────────────────────────
 # Minimum importance score to persist an exchange to L2 before eviction.

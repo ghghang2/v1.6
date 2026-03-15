@@ -261,7 +261,7 @@ class ChatUI(ContextMixin, ConversationMixin):
                 f"window and have been omitted from this view.]"
             ))
 
-        for role, content, tool_id, tool_name, tool_args in window:
+        for role, content, error_flag, tool_id, tool_name, tool_args in window:
             if role == "user":
                 children.append(renderer.render_user(content))
             elif role == "analysis":
