@@ -50,6 +50,10 @@ class ChatUI(ContextMixin, ConversationMixin):
 
         self._stop_streaming = False
         self._stream_thread = None
+        # True while executor.run_tool() is in flight — used by the metrics
+        # updater to keep proc green during tool execution when the LLM server
+        # is idle between calls.
+        self._tool_running = False
 
         # Initialise per-session compressor state for lossless learning.
         comp = lazy_import("nbchat.core.compressor")
@@ -98,6 +102,13 @@ class ChatUI(ContextMixin, ConversationMixin):
 
     def _reset_session_state(self) -> None:
         """Clear all per-session in-memory state and associated DB rows."""
+        # Flush monitoring data for the departing session before clearing it.
+        try:
+            mon = lazy_import("nbchat.core.monitoring")
+            db = lazy_import("nbchat.core.db")
+            mon.flush_session_monitor(self.session_id, db)
+        except Exception:
+            pass
         self.history = []
         self.task_log = []
         self._turn_summary_cache = {}
@@ -130,6 +141,12 @@ class ChatUI(ContextMixin, ConversationMixin):
                 width="100%", border="1px solid lightgray", padding="2px"
             )
         )
+        self.monitoring_output = widgets.HTML(
+            value="<i>No monitoring data yet.</i>",
+            layout=widgets.Layout(
+                width="100%", border="1px solid lightgray", padding="4px"
+            ),
+        )
         self._refresh_tools_list()
 
         new_chat_btn = widgets.Button(
@@ -153,6 +170,8 @@ class ChatUI(ContextMixin, ConversationMixin):
             new_chat_btn,
             widgets.HTML("<hr>"),
             self.tools_output,
+            widgets.HTML("<hr>"),
+            self.monitoring_output,
             widgets.HTML("<hr>"),
             self.session_dropdown,
         ], layout=widgets.Layout(width="15%", border="1px solid lightgray"))
@@ -205,11 +224,17 @@ class ChatUI(ContextMixin, ConversationMixin):
                             f.seek(0, 2)
                             f.seek(max(0, f.tell() - 4000))
                             lines = f.read().decode("utf-8", errors="ignore").splitlines()
-                        proc = any(
+                        # proc is True when the LLM server is actively processing
+                        # tokens OR when a tool is currently executing.  The LLM
+                        # server is legitimately idle between tool calls, but the
+                        # agent loop is still running — showing black during tool
+                        # execution was a false signal to the user.
+                        server_active = any(
                             "slot update_slots:" in l.lower() for l in lines[-10:]
                         )
                         if any("all slots are idle" in l.lower() for l in lines[-5:]):
-                            proc = False
+                            server_active = False
+                        proc = server_active or self._tool_running
                         tps = 0.0
                         for line in reversed(lines):
                             if "eval time" in line.lower():
@@ -254,6 +279,35 @@ class ChatUI(ContextMixin, ConversationMixin):
         self.task_log = db.load_task_log(self.session_id)
         self._turn_summary_cache = db.load_turn_summaries(self.session_id)
         self._render_history()
+        self._refresh_monitoring_panel()
+
+    def _refresh_monitoring_panel(self) -> None:
+        """Re-render the monitoring sidebar widget from current session data.
+
+        Called after each tool execution and at the end of each conversation
+        turn — not on a timer.  Safe to call from the background conversation
+        thread; ipywidgets handles the widget value update thread-safely.
+        """
+        try:
+            from nbchat.ui.styles import CODE_COLOR
+            mon = lazy_import("nbchat.core.monitoring")
+            db = lazy_import("nbchat.core.db")
+
+            session_report = mon.get_session_monitor(self.session_id).get_session_report()
+
+            global_report: dict | None = None
+            try:
+                raw = db.load_global_monitoring_stats()
+                if raw:
+                    global_report = mon.get_global_report(raw)
+            except Exception:
+                pass
+
+            self.monitoring_output.value = mon.format_monitoring_html(
+                session_report, global_report, code_color=CODE_COLOR
+            )
+        except Exception:
+            pass  # monitoring panel must never crash the agent loop
 
     def _render_history(self):
         """Render the windowed slice of history into the chat panel."""

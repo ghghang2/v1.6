@@ -376,3 +376,29 @@ def clear_core_memory(session_id: str) -> None:
             "DELETE FROM core_memory WHERE session_id = ?", (session_id,)
         )
         conn.commit()
+
+_GLOBAL_SESSION_ID = "__global__"
+_GLOBAL_MONITORING_KEY = "monitoring_global_v1"
+ 
+ 
+def save_global_monitoring_stats(stats: dict) -> None:
+    """Persist cross-session monitoring aggregates to session_meta.
+ 
+    Uses the sentinel session_id '__global__' so no new table is required.
+    The value is JSON-serialised and stored under key 'monitoring_global_v1'.
+    """
+    _meta_set(_GLOBAL_SESSION_ID, _GLOBAL_MONITORING_KEY, json.dumps(stats))
+ 
+ 
+def load_global_monitoring_stats() -> dict | None:
+    """Load cross-session monitoring aggregates from session_meta.
+ 
+    Returns the parsed dict, or None if no data has been saved yet.
+    """
+    raw = _meta_get(_GLOBAL_SESSION_ID, _GLOBAL_MONITORING_KEY)
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except Exception:
+        return None

@@ -66,6 +66,8 @@ class ConversationMixin:
     def _run_conversation_loop(
         self, real_client, db, renderer, executor, chat_builder, comp
     ) -> None:
+        from nbchat.core import monitoring as mon
+
         # ── L1: update goal from latest user message ──────────────────────
         # Done before building messages so the very first API call already
         # has fresh core memory injected via _window().
@@ -87,6 +89,8 @@ class ConversationMixin:
         for msg in messages:
             msg.pop("reasoning_content", None)
 
+        monitor = mon.get_session_monitor(self.session_id)
+
         config = lazy_import("nbchat.core.config")
         STALL_TURNS = config.STALL_TURNS
         _recent_call_sets: list = []
@@ -95,9 +99,25 @@ class ConversationMixin:
             if self._stop_streaming:
                 break
 
+            # Measure volatile block (messages[1]) length before each call so
+            # the monitor can track turn-over-turn delta alongside cache metrics.
+            volatile_len = (
+                len(messages[1]["content"])
+                if len(messages) > 2 and messages[1].get("role") == "user"
+                else 0
+            )
+
             reasoning, content, tool_calls, finish_reason = self._stream_response(
                 real_client, messages
             )
+
+            # Record cache alignment metrics for this LLM call.  Parsing the
+            # server log here gives us sim_best, new_tokens, and invalidations
+            # for the completion that just finished.
+            try:
+                monitor.record_llm_call(volatile_len)
+            except Exception:
+                pass
 
             if reasoning:
                 # analysis rows are display-only; error_flag not meaningful
@@ -108,6 +128,8 @@ class ConversationMixin:
                 if content:
                     self.history.append(("assistant", content, "", "", "", 0))
                     db.log_message(self.session_id, "assistant", content)
+                # Turn complete — refresh monitoring with final LLM call metrics.
+                self._refresh_monitoring_panel()
                 break
 
             if turn == self.MAX_TOOL_TURNS:
@@ -172,7 +194,13 @@ class ConversationMixin:
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
 
-                raw_result = executor.run_tool(tool_name, tool_args)
+                # Signal to the metrics updater that processing is ongoing
+                # even while the LLM server is idle between calls.
+                self._tool_running = True
+                try:
+                    raw_result = executor.run_tool(tool_name, tool_args)
+                finally:
+                    self._tool_running = False
                 self._append(renderer.render_tool(raw_result, tool_name, tool_args))
 
                 compressed = comp.compress_tool_output(
@@ -225,6 +253,30 @@ class ConversationMixin:
                     self._update_l1_from_exchange(tool_name, tool_args, model_result)
                 except Exception as exc:
                     _log.debug(f"L1/L2 post-tool update failed: {exc}")
+
+                # ── Monitoring: record compression outcome ────────────────
+                try:
+                    comp_stats = comp.get_compression_stats().get(tool_name, {})
+                    last_strategy = next(
+                        iter(comp_stats.get("strategies", {})), ""
+                    )
+                    was_compressed = len(compressed) < len(raw_result)
+                    monitor.record_tool_call(
+                        tool_name=tool_name,
+                        was_compressed=was_compressed,
+                        had_error=bool(error_flag),
+                        strategy=last_strategy,
+                        input_chars=len(raw_result),
+                        output_chars=len(compressed),
+                    )
+                    if compressed.strip() == "NO_RELEVANT_OUTPUT":
+                        monitor.record_no_output(tool_name)
+                except Exception:
+                    pass
+
+                # Refresh monitoring panel after each tool call so warnings
+                # surface immediately rather than waiting for turn end.
+                self._refresh_monitoring_panel()
 
     def _stream_response(self, real_client, messages):
         from nbchat.ui import chat_renderer as renderer

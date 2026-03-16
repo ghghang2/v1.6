@@ -10,6 +10,7 @@ _tools = None
 _db_module = None
 _config_module = None
 _compressor_module = None
+_monitoring_module = None
 
 
 def lazy_import(module_name: str):
@@ -48,6 +49,12 @@ def lazy_import(module_name: str):
             import nbchat.core.compressor as compressor_module
             _compressor_module = compressor_module
         return _compressor_module
+
+    elif module_name == "nbchat.core.monitoring":
+        if _monitoring_module is None:
+            import nbchat.core.monitoring as monitoring_module
+            _monitoring_module = monitoring_module
+        return _monitoring_module
 
     else:
         raise ValueError(f"Unknown module {module_name}")

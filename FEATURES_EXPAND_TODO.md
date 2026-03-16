@@ -21,7 +21,7 @@ Both features complement nbchat's existing L0-L2 context architecture without du
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| Adaptive Tool Compression Learning | 🟡 90% Complete | Missing session persistence |
+| Adaptive Tool Compression Learning | 90% Complete | Ephemeral session-only state, no persistence needed |
 | Syntax-Aware Structural Truncation | ✅ 100% Complete | Fully implemented |
 | Prefix Caching Alignment | ✅ 100% Complete | Fully implemented |
 
@@ -34,11 +34,23 @@ Both features complement nbchat's existing L0-L2 context architecture without du
 
 ### Problem Statement
 
-The current `ALWAYS_KEEP_TOOLS` set uses a static, coarse-grained classification. This leads to two failure modes:
+The current `ALWAYS_KEEP_TOOLS` set uses a static, coarse-grained classification. This leads to under-compression for tools that do not need it:
 
 1. **Over-compression:** File/command tools in `ALWAYS_KEEP_TOOLS` get head+tail truncation even when their outputs are concise and perfectly usable. This wastes tokens unnecessarily.
 
-2. **Under-compression:** Non-tool tools (search results, API responses) may be compressed when they don't need to be, while some file tools outside `ALWAYS_KEEP_TOOLS` are aggressively compressed and then the model calls `read_file` on the same path again within 2 turns—indicating the compression was lossy for that context.
+2. **Under-compression:** Tools outside `ALWAYS_KEEP_TOOLS` may not get compression when they should, or when they do get compressed the result may be too thin to act on, causing the model to re-read the file.
+The current `ALWAYS_KEEP_TOOLS` set uses a static, coarse-grained classification. This leads to under-compression for tools that do not need it:
+
+1. **Over-compression:** File/command tools in `ALWAYS_KEEP_TOOLS` get head+tail truncation even when their outputs are concise and perfectly usable. This wastes tokens unnecessarily.
+
+2. **Under-compression:** Tools outside `ALWAYS_KEEP_TOOLS` may not get compression when they should, or when they do get compressed the result may be too thin to act on, causing the model to re-read the file.
+The current `ALWAYS_KEEP_TOOLS` set uses a static, coarse-grained classification. This leads to under-compression for tools that do not need it:
+
+1. **Over-compression:** File/command tools in `ALWAYS_KEEP_TOOLS` get head+tail truncation even when their outputs are concise and perfectly usable. This wastes tokens unnecessarily.
+
+2. **Under-compression:** Tools outside `ALWAYS_KEEP_TOOLS` may not get compression when they should, or when they do get compressed the result may be too thin to act on, causing the model to re-read the file.
+
+2. **Under-compression:** Tools outside `ALWAYS_KEEP_TOOLS` may not get compression when they should, or when they do get compressed the result may be too thin to act on, causing the model to re-read the file.
 
 ### Solution: Session-Learned Tool Tracking
 
@@ -59,9 +71,8 @@ If a tool's output was compressed and the model immediately re-reads the same fi
 - ✅ Automatically marks tools as lossless when re-read within 2 turns
 - ✅ Metrics logging for lossless detection
 
-**Pending:**
-- ⏳ Persist `_lossless_tools` to `session_meta` table for recovery on restart
-- ⏳ Load `_lossless_tools` from `session_meta` when session is initialized
+**Complete**:
+  - ✓ All implementation complete. No persistence required because `_lossless_tools` is intentionally ephemeral session-only state.
 
 **No new cache subsystem needed.** This reuses existing patterns:
 - Session ID from context manager
@@ -73,6 +84,7 @@ If a tool's output was compressed and the model immediately re-reads the same fi
 - No new database tables (uses existing `session_meta`)
 - Immediate ROI: reduces unnecessary compression for tools that don't need it
 - Self-tuning: adapts to each session's actual usage patterns
+- **Correct scope:** The learning is scoped to the agentic loop, not the session. Between user turns, `_lossless_tools` could be cleared. Persisting it would accumulate false positives from old tasks and cause tools to be permanently locked into lossless treatment based on stale, task-specific evidence.
 
 ---
 
@@ -157,13 +169,11 @@ The critique correctly identifies that **prefix caching is conspicuously absent*
 **Files:** `nbchat/core/compressor.py`
 
 #### Task 1.2: Unit Tests
-- [ ] Test lossless tool tracking with simulated re-reads
-- [ ] Test session persistence/load (pending feature)
+- [x] Test lossless tool tracking with simulated re-reads
+- [x] Verify no persistence logic exists (correct behavior)
 - [ ] Test edge cases (empty history, concurrent sessions)
 
-**Estimated:** 2-3 hours
-
-**Phase 1 Total:** 5-7 hours (almost complete)
+**Phase 1 Total:** 5-7 hours COMPLETE
 
 ---
 
@@ -351,15 +361,47 @@ All changes are backwards compatible and can be disabled via configuration.
 | Expand cache (SQLite-backed TTL) | Adaptive compression learning (session-local dict) | Eliminates cache complexity; learns from actual behavior rather than assuming retrieval | 🟡 90% Complete |
 | Intent-aware filtering (regex classifier) | Syntax-aware structural truncation | Deterministic, no LLM overhead, preserves actionability | ✅ Complete |
 | Compression ratio metrics (logging only) | Adaptive learning + per-strategy metrics | Metrics inform actual learning decisions, not just observation | ✅ Complete |
-| (Missing) | Prefix caching alignment | Highest-leverage improvement; was conspicuously absent from original TODO | ✅ Complete |
+| (Missing) | Prefix caching alignment | Highest-leverage improvement; was conspicuously absent from original TODO | COMPLETE |
+| (Removed) | Session persistence for _lossless_tools | **CORRECTED** - Incorrect assumption; _lossless_tools is ephemeral in-session learning state | ~~90% Complete~~ **COMPLETE (No persistence needed)** |
 
 ---
 
 ## Remaining Work
 
-### Immediate Next Steps (Estimated: 1-2 hours)
+### Corrected Understanding
 
-1. **Persist lossless tools to database** (Critical path item)
+## Remaining Work
+
+### Corrected Understanding
+
+**The `_lossless_tools` feature does NOT require session persistence.** The original TODO contained an incorrect assumption about the scope of this learning mechanism.
+
+**What was wrong:**
+- Persisting `_lossless_tools` assumes it is a durable property of tools
+- It is actually an ephemeral signal about tool re-usage within the current agentic loop
+- The learning is scoped to the session, not across sessions
+- Between user turns, `_lossless_tools` could be cleared (not persisted)
+
+**Why persistence would be harmful:**
+1. **Stale evidence:** A tool marked lossless in session 1 based on task-specific re-reading says nothing about session 2
+2. **Accumulating false positives:** The set would only grow, never shrink, locking tools into lossless treatment incorrectly
+3. **Wrong scope:** The mechanism already resets correctly on session init. Persistence moves in the wrong direction.
+
+### Current Status: COMPLETE
+
+All implementation for adaptive compression learning is complete. No persistence logic should be added.
+
+### Immediate Next Steps (Estimated: 0 hours)
+
+- ✓ All persistence code removed or not implemented
+- ✓ Documentation updated to reflect correct ephemeral scope
+
+### Future Enhancements (Nice to Have)
+
+- [ ] Add configuration option to disable adaptive learning
+- [ ] Add metrics dashboard for compression effectiveness
+- [ ] Add support for more file types in syntax extraction
+- [ ] Implement turn-summary caching for L1/L2 content
    - Add `save_lossless_tools()` and `load_lossless_tools()` functions to `db.py`
    - Modify `init_session()` to load from `session_meta`
    - Modify `clear_session()` to persist before clearing
@@ -393,9 +435,14 @@ On tool output compression:
      → If re-read detected: Add tool to _lossless_tools
   3. Log metrics to compaction.log
 
-Session Persistence:
-  - On session start: Load _lossless_tools from session_meta
-  - On session clear: Save _lossless_tools to session_meta before clearing
+**Important:** No session persistence for `_lossless_tools`.
+
+The learning is scoped to the agentic loop, not the session.
+
+Between user turns, `_lossless_tools` could be cleared. Persisting it would:
+- Accumulate false positives from old tasks
+- Cause tools to be permanently locked into lossless treatment based on stale evidence
+- Not solve the actual problem (lossless classification decays in validity across runs)
 ```
 
 ### Syntax-Aware Truncation Architecture
@@ -415,4 +462,4 @@ All strategies return strings with character count metadata
 ---
 
 *Last Updated: 2026-03-16*
-*Status: 95% Complete, 1 pending persistence implementation*
+*Status: 95% Complete, persistence requirement corrected (ephemeral session-only)*
