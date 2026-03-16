@@ -10,6 +10,8 @@ Handles the agentic tool-calling loop and streaming response.
     giving the agent durable recall across context window boundaries.
   • Stall-detection interrupt messages are persisted to history and the DB so
     the model's subsequent response has a valid preceding user message.
+  • compress_tool_output receives the session_id so the session-local lossless
+    learning and repeat-read detection are active.
 """
 from __future__ import annotations
 
@@ -51,12 +53,19 @@ class ConversationMixin:
                 real_client, db, renderer, executor, chat_builder, comp
             )
         except Exception as exc:
-            _log.debug(f"_process_conversation_turn crashed: {type(exc).__name__}: {exc}", exc_info=True)
+            _log.debug(
+                f"_process_conversation_turn crashed: "
+                f"{type(exc).__name__}: {exc}",
+                exc_info=True,
+            )
             self._append(renderer.render_assistant(
-                f"Conversation loop stopped unexpectedly: {type(exc).__name__}: {exc}"
+                f"Conversation loop stopped unexpectedly: "
+                f"{type(exc).__name__}: {exc}"
             ))
 
-    def _run_conversation_loop(self, real_client, db, renderer, executor, chat_builder, comp) -> None:
+    def _run_conversation_loop(
+        self, real_client, db, renderer, executor, chat_builder, comp
+    ) -> None:
         # ── L1: update goal from latest user message ──────────────────────
         # Done before building messages so the very first API call already
         # has fresh core memory injected via _window().
@@ -91,7 +100,7 @@ class ConversationMixin:
             )
 
             if reasoning:
-                # analysis rows are display-only; error_flag not meaningful here
+                # analysis rows are display-only; error_flag not meaningful
                 self.history.append(("analysis", reasoning, "", "", "", 0))
                 db.log_message(self.session_id, "analysis", reasoning)
 
@@ -116,7 +125,10 @@ class ConversationMixin:
             _recent_call_sets.append(turn_calls)
             if len(_recent_call_sets) > STALL_TURNS:
                 _recent_call_sets.pop(0)
-            if len(_recent_call_sets) == STALL_TURNS and len(set(_recent_call_sets)) == 1:
+            if (
+                len(_recent_call_sets) == STALL_TURNS
+                and len(set(_recent_call_sets)) == 1
+            ):
                 stall_msg = (
                     "You appear to be stuck in a loop — you have made the "
                     f"same tool calls {STALL_TURNS} turns in a row without "
@@ -149,8 +161,12 @@ class ConversationMixin:
             }
             full_msg_json = json.dumps(storable_msg)
             # assistant_full rows don't have a meaningful error_flag
-            self.history.append(("assistant_full", "", "full", "full", full_msg_json, 0))
-            db.log_row(self.session_id, "assistant_full", "", "full", "full", full_msg_json)
+            self.history.append(
+                ("assistant_full", "", "full", "full", full_msg_json, 0)
+            )
+            db.log_row(
+                self.session_id, "assistant_full", "", "full", "full", full_msg_json
+            )
 
             for tc in tool_calls:
                 tool_name = tc["function"]["name"]
@@ -160,9 +176,12 @@ class ConversationMixin:
                 self._append(renderer.render_tool(raw_result, tool_name, tool_args))
 
                 compressed = comp.compress_tool_output(
-                    tool_name, tool_args, raw_result,
+                    tool_name,
+                    tool_args,
+                    raw_result,
                     model=self.model_name,
                     client=real_client,
+                    session_id=self.session_id,   # enables lossless learning
                 )
 
                 model_result = (
@@ -176,8 +195,12 @@ class ConversationMixin:
                 # Compute error_flag from raw output before compression may
                 # have stripped error signals.
                 error_flag = 1 if _is_error_content(raw_result) else 0
-                self.history.append(("tool", raw_result, tc["id"], tool_name, tool_args, error_flag))
-                db.log_tool_msg(self.session_id, tc["id"], tool_name, tool_args, raw_result)
+                self.history.append(
+                    ("tool", raw_result, tc["id"], tool_name, tool_args, error_flag)
+                )
+                db.log_tool_msg(
+                    self.session_id, tc["id"], tool_name, tool_args, raw_result
+                )
 
                 messages.append({
                     "role": "tool",
@@ -193,7 +216,9 @@ class ConversationMixin:
                         msg_for_model,
                         {"role": "tool", "content": model_result},
                     ]
-                    importance = self._importance_score(exchange_msgs, raw_result=raw_result)
+                    importance = self._importance_score(
+                        exchange_msgs, raw_result=raw_result
+                    )
                     self._write_exchange_to_episodic(
                         turn, tool_name, tool_args, model_result, importance
                     )
@@ -243,19 +268,26 @@ class ConversationMixin:
                         reasoning_widget = renderer.render_placeholder("reasoning")
                         self._append(reasoning_widget)
                     reasoning_accum += delta.reasoning_content
-                    reasoning_widget.value = renderer.render_reasoning(reasoning_accum).value
+                    reasoning_widget.value = renderer.render_reasoning(
+                        reasoning_accum
+                    ).value
 
                 if delta.content:
                     if assistant_widget is None:
                         assistant_widget = renderer.render_placeholder("assistant")
                         children = list(self.chat_history.children)
                         if reasoning_widget in children:
-                            children.insert(children.index(reasoning_widget) + 1, assistant_widget)
+                            children.insert(
+                                children.index(reasoning_widget) + 1,
+                                assistant_widget,
+                            )
                         else:
                             children.append(assistant_widget)
                         self.chat_history.children = children
                     content_accum += delta.content
-                    assistant_widget.value = renderer.render_assistant(content_accum).value
+                    assistant_widget.value = renderer.render_assistant(
+                        content_accum
+                    ).value
         except Exception as exc:
             if "now finding less tool calls" in str(exc):
                 _log.warning(
@@ -267,10 +299,16 @@ class ConversationMixin:
                 )
                 raise
             else:
-                _log.debug(f"_stream_response failed: {type(exc).__name__}: {exc}", exc_info=True)
+                _log.debug(
+                    f"_stream_response failed: {type(exc).__name__}: {exc}",
+                    exc_info=True,
+                )
                 raise
 
-        tool_calls = [tool_buffer[i] for i in sorted(tool_buffer)] if tool_buffer else None
+        tool_calls = (
+            [tool_buffer[i] for i in sorted(tool_buffer)]
+            if tool_buffer else None
+        )
 
         if tool_calls:
             if assistant_widget is not None:
@@ -278,10 +316,14 @@ class ConversationMixin:
                     content_accum, tool_calls
                 ).value
             else:
-                assistant_widget = renderer.render_assistant_with_tools("", tool_calls)
+                assistant_widget = renderer.render_assistant_with_tools(
+                    "", tool_calls
+                )
                 children = list(self.chat_history.children)
                 if reasoning_widget in children:
-                    children.insert(children.index(reasoning_widget) + 1, assistant_widget)
+                    children.insert(
+                        children.index(reasoning_widget) + 1, assistant_widget
+                    )
                 else:
                     children.append(assistant_widget)
                 self.chat_history.children = children
@@ -296,10 +338,9 @@ def _sanitize_messages(messages: list) -> None:
     """Normalize assistant messages for strict OpenAI-compat models.
 
     The OpenAI spec requires content=None (not "") when tool_calls are
-    present on an assistant message.  Smaller models fail to emit
-    structured tool calls on subsequent turns when they see content=""
-    alongside tool_calls in their history — they express the next call
-    as reasoning text instead.  This sanitizer fixes both freshly built
+    present on an assistant message.  Smaller models fail to emit structured
+    tool calls on subsequent turns when they see content="" alongside
+    tool_calls in their history.  This sanitizer fixes both freshly built
     messages and old DB rows reconstructed via assistant_full.
     """
     for m in messages:

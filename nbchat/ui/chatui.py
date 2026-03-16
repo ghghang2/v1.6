@@ -51,6 +51,10 @@ class ChatUI(ContextMixin, ConversationMixin):
         self._stop_streaming = False
         self._stream_thread = None
 
+        # Initialise per-session compressor state for lossless learning.
+        comp = lazy_import("nbchat.core.compressor")
+        comp.init_session(self.session_id)
+
         self._create_widgets()
         self._start_metrics_updater()
         self._load_history()
@@ -62,13 +66,7 @@ class ChatUI(ContextMixin, ConversationMixin):
     # ------------------------------------------------------------------
 
     def _inject_scroll_preservation(self) -> None:
-        """Inject a one-time JS MutationObserver that preserves scroll position.
-
-        ipywidgets VBox replaces the entire DOM subtree on every .children
-        reassignment, which resets scrollTop to 0.  The observer intercepts
-        every childList mutation and restores the last known scroll position,
-        so reading position is never disrupted by appends, streaming, or pruning.
-        """
+        """Inject a one-time JS MutationObserver that preserves scroll position."""
         from IPython.display import Javascript, display as ipy_display
         js = """
         (function() {
@@ -103,13 +101,16 @@ class ChatUI(ContextMixin, ConversationMixin):
         self.history = []
         self.task_log = []
         self._turn_summary_cache = {}
-        # Clear L1 core memory and L2 episodic store for the old session so a
-        # new session starts clean.  Wrapped in try/except so a DB error never
-        # prevents session switching.
         try:
             db = lazy_import("nbchat.core.db")
             db.clear_core_memory(self.session_id)
             db.delete_episodic_for_session(self.session_id)
+        except Exception:
+            pass
+        # Clear session-local compressor state (lossless set, recent_compressed).
+        try:
+            comp = lazy_import("nbchat.core.compressor")
+            comp.clear_session(self.session_id)
         except Exception:
             pass
 
@@ -125,7 +126,9 @@ class ChatUI(ContextMixin, ConversationMixin):
             layout=widgets.Layout(width="100%", border="1px solid gray", padding="10px"),
         )
         self.tools_output = widgets.HTML(
-            layout=widgets.Layout(width="100%", border="1px solid lightgray", padding="2px")
+            layout=widgets.Layout(
+                width="100%", border="1px solid lightgray", padding="2px"
+            )
         )
         self._refresh_tools_list()
 
@@ -202,7 +205,9 @@ class ChatUI(ContextMixin, ConversationMixin):
                             f.seek(0, 2)
                             f.seek(max(0, f.tell() - 4000))
                             lines = f.read().decode("utf-8", errors="ignore").splitlines()
-                        proc = any("slot update_slots:" in l.lower() for l in lines[-10:])
+                        proc = any(
+                            "slot update_slots:" in l.lower() for l in lines[-10:]
+                        )
                         if any("all slots are idle" in l.lower() for l in lines[-5:]):
                             proc = False
                         tps = 0.0
@@ -224,7 +229,10 @@ class ChatUI(ContextMixin, ConversationMixin):
                         try:
                             cf = changed_files()
                             if cf:
-                                content += "<br><br><b>Changed files:</b><br>" + "<br>".join(cf)
+                                content += (
+                                    "<br><br><b>Changed files:</b><br>"
+                                    + "<br>".join(cf)
+                                )
                         except Exception:
                             pass
                     else:
@@ -266,7 +274,9 @@ class ChatUI(ContextMixin, ConversationMixin):
             elif role == "analysis":
                 children.append(renderer.render_reasoning(content))
             elif role == "assistant":
-                children.append(self._widget_for_assistant(content, tool_id, tool_args))
+                children.append(
+                    self._widget_for_assistant(content, tool_id, tool_args)
+                )
             elif role == "assistant_full":
                 try:
                     msg = json.loads(tool_args)
@@ -278,42 +288,38 @@ class ChatUI(ContextMixin, ConversationMixin):
                 except Exception:
                     children.append(renderer.render_assistant(content))
             elif role == "tool":
-                children.append(renderer.render_tool(content, tool_name, str(tool_args)))
+                children.append(
+                    renderer.render_tool(content, tool_name, str(tool_args))
+                )
             elif role == "system":
                 children.append(renderer.render_system(content))
 
         self.chat_history.children = children
 
-    def _widget_for_assistant(self, content: str, tool_id: str, tool_args: str) -> widgets.HTML:
+    def _widget_for_assistant(
+        self, content: str, tool_id: str, tool_args: str
+    ) -> widgets.HTML:
         if tool_id == "multiple":
             try:
-                return renderer.render_assistant_with_tools(content, json.loads(tool_args))
+                return renderer.render_assistant_with_tools(
+                    content, json.loads(tool_args)
+                )
             except Exception:
                 pass
         return renderer.render_assistant(content)
 
     def _append(self, widget: widgets.HTML):
-        """Append a widget to the chat panel.
-
-        Pruning is intentionally NOT done here — replacing .children mid-stream
-        resets the browser scroll position to the top, disrupting the user if
-        they are reading earlier messages.  Pruning happens in _on_send instead,
-        where a scroll reset is natural (the user just submitted a new message).
-        """
+        """Append a widget to the chat panel without pruning (scroll-safe)."""
         self.chat_history.children = list(self.chat_history.children) + [widget]
 
     def _prune_widgets(self) -> None:
-        """Prune oldest widgets if the panel exceeds MAX_VISIBLE_WIDGETS.
-
-        Called from _on_send only — at that point the user has just interacted
-        with the input box so scrolling to the bottom is expected behaviour.
-        """
+        """Prune oldest widgets if the panel exceeds MAX_VISIBLE_WIDGETS."""
         children = list(self.chat_history.children)
         if len(children) > self.MAX_VISIBLE_WIDGETS:
             trim = len(children) - self.MAX_VISIBLE_WIDGETS
             note = renderer.render_system(
-                f"[{trim} earlier messages pruned from view to maintain performance. "
-                f"Full history is saved in the database.]"
+                f"[{trim} earlier messages pruned from view to maintain "
+                f"performance. Full history is saved in the database.]"
             )
             self.chat_history.children = [note] + children[trim:]
 
@@ -325,6 +331,9 @@ class ChatUI(ContextMixin, ConversationMixin):
         db = lazy_import("nbchat.core.db")
         self.session_id = str(uuid.uuid4())
         self._reset_session_state()
+        # Initialise compressor state for the new session.
+        comp = lazy_import("nbchat.core.compressor")
+        comp.init_session(self.session_id)
         options = list(db.get_session_ids())
         if self.session_id not in options:
             options.append(self.session_id)
@@ -336,6 +345,9 @@ class ChatUI(ContextMixin, ConversationMixin):
         if change["new"]:
             self.session_id = change["new"]
             self._reset_session_state()
+            # Initialise compressor state for the switched-to session.
+            comp = lazy_import("nbchat.core.compressor")
+            comp.init_session(self.session_id)
             self._load_history()
 
     def _on_send(self, _):
@@ -349,8 +361,6 @@ class ChatUI(ContextMixin, ConversationMixin):
             self._stop_streaming = True
             self._stream_thread.join()
 
-        # Prune before appending the new message — scroll reset is acceptable
-        # here since the user just submitted input and expects to see the bottom.
         self._prune_widgets()
         # Canonical 6-tuple: error_flag=0 for user messages
         self.history.append(("user", user_input, "", "", "", 0))

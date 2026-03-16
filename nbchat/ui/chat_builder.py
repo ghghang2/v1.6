@@ -1,4 +1,34 @@
-"""Utility for converting chat history into OpenAI API message format."""
+"""Utility for converting chat history into OpenAI API message format.
+
+KV-cache alignment
+------------------
+Local inference servers (llama.cpp, vLLM, …) reuse KV cache for any
+token-sequence prefix that matches a previous request.  The longest
+stable prefix produces the best cache hit rate.
+
+Previous implementation appended the task log, L1 core memory, L2
+episodic block, and prior-context summaries directly to
+``messages[0]["content"]``.  Because all of these change on every turn,
+``messages[0]`` was never identical across calls → zero cache hits on the
+system prompt, which is the longest and most expensive block to recompute.
+
+This revision keeps ``messages[0]["content"]`` equal to exactly
+``system_prompt``, unmodified.  The volatile context (task log, L1, L2,
+prior summaries) is emitted as a synthetic user turn at ``messages[1]``
+with a clear ``[SESSION CONTEXT]`` label, followed by a minimal assistant
+acknowledgement at ``messages[2]``.  The actual conversation starts at
+``messages[3]``.
+
+Result:
+  • ``messages[0]`` is token-identical on every call → full cache hit on
+    the entire system prompt.
+  • ``messages[3..]`` (stable conversation history) is token-identical
+    between turns where no new tool calls have completed → cache hit on
+    all prior exchanges.
+  • Only ``messages[1]`` (volatile context) and the new tail of the
+    conversation (latest assistant + tool results + new user message) are
+    re-evaluated each turn.
+"""
 from __future__ import annotations
 
 import json
@@ -6,6 +36,12 @@ from typing import List, Dict, Tuple
 import logging
 
 _log = logging.getLogger("nbchat.compaction")
+
+# Label used for the synthetic volatile-context user turn.
+_CTX_LABEL = "[SESSION CONTEXT — updated each turn]"
+# Minimal assistant acknowledgement after the context turn.
+_CTX_ACK = "Context received."
+
 
 def build_messages(
     history: List[Tuple[str, str, str, str, str, int]],
@@ -19,46 +55,51 @@ def build_messages(
     history:
         List of canonical 6-tuples:
         ``(role, content, tool_id, tool_name, tool_args, error_flag)``.
-        Should already be pre-windowed (via _window()) to the last N user turns.
+        Should already be pre-windowed (via _window()) to the last N user
+        turns.  Leading ``("system", …)`` rows (L1/L2/prior context blocks
+        injected by ContextMixin._window()) are extracted and placed into
+        the volatile context turn rather than messages[0].
     system_prompt:
-        The system message to prepend.
+        The static system message.  Written verbatim to ``messages[0]``
+        and never modified — this is the contract that enables KV caching.
     task_log:
         Optional list of recent action strings maintained by ChatUI.
-        Appended to the system prompt so the model always knows what it
-        has been doing even when old messages are outside the window.
+        Included in the volatile context turn (messages[1]) so the model
+        always knows what it has been doing even when old messages are
+        outside the window.
+
+    Message layout
+    --------------
+    messages[0]  {"role": "system",    "content": system_prompt}  <- static
+    messages[1]  {"role": "user",      "content": "[SESSION CONTEXT]..."}  <- volatile
+    messages[2]  {"role": "assistant", "content": "Context received."}     <- volatile
+    messages[3+] actual conversation turns (user / assistant / tool)
+
+    messages[1] and messages[2] are omitted when there is no volatile
+    content (empty task_log and no leading system rows in history), keeping
+    the message list minimal for fresh sessions.
 
     Notes
     -----
-    Many local-model servers (llama.cpp, Ollama, …) enforce via their Jinja
+    Many local-model servers (llama.cpp, Ollama, ...) enforce via their Jinja
     chat template that the *system* role may only appear as the very first
-    message.  Injecting additional ``{"role": "system"}`` entries mid-list
-    raises a 500 "System message must be at the beginning" error.
+    message.  This function never emits more than one system-role message.
+    Any ``("system", …)`` rows that appear *after* conversation content
+    (which should not occur in normal operation but may surface in legacy DB
+    rows) are demoted to user-role ``[CONTEXT NOTE]`` messages.
 
-    The context manager injects L1 Core Memory, L2 Episodic context, and
-    per-turn prior-context summaries as ``("system", …)`` rows at the front
-    of the windowed history.  Rather than emitting each as a separate system
-    message, this function collects *all* system-role rows that appear in
-    *history* before the first non-system row and folds them into a single
-    ``messages[0]`` system block.  Any system row that appears after
-    conversation content (which should not happen in normal operation but
-    could surface in legacy DB rows) is converted to a user-role context
-    note so the constraint is never violated.
-
-    ``analysis`` rows are reasoning traces — display-only, never sent to the
-    model.  They are silently skipped here.
+    ``("analysis", …)`` rows are reasoning traces — display-only, never
+    sent to the model.
     """
-    system_content = system_prompt
-    if task_log:
-        entries = "\n".join(f"  {e}" for e in task_log[-20:])
-        system_content = (
-            system_prompt
-            + "\n\n[RECENT ACTION LOG — what has been done so far]\n"
-            + entries
-            + "\n[END ACTION LOG]"
-        )
+    # ── messages[0]: static system prompt, NEVER modified ─────────────────
+    # Keeping this token-identical on every call is the contract for KV cache
+    # prefix hits.  Nothing is appended here.
+    messages: List[Dict] = [{"role": "system", "content": system_prompt}]
 
-    # Collect any leading system rows from history and merge them into the
-    # base system prompt before the first user/assistant/tool message.
+    # ── Separate leading system rows from conversation content ─────────────
+    # ContextMixin._window() prepends L1/L2/prior as ("system", …) rows at
+    # the front of the history list.  We extract them here and fold them into
+    # the volatile context turn rather than messages[0].
     extra_system_parts: List[str] = []
     conversation_started = False
     non_system_history: List[Tuple] = []
@@ -67,38 +108,59 @@ def build_messages(
         role = row[0]
         content = row[1]
         if role == "system" and not conversation_started:
-            # Leading system row — merge into messages[0].
             extra_system_parts.append(content)
         else:
             if role != "system":
                 conversation_started = True
             if role == "system":
-                # System row appearing after conversation content — demote to
-                # a labelled user context note to satisfy the server constraint.
+                # System row after conversation has started — demote to a
+                # labelled user context note to satisfy the single-system-
+                # message constraint.
                 non_system_history.append(
                     ("_context_note", content, row[2], row[3], row[4], row[5])
                 )
             else:
                 non_system_history.append(row)
 
-    if extra_system_parts:
-        system_content = system_content + "\n\n" + "\n\n".join(extra_system_parts)
+    # ── messages[1/2]: volatile context turn ──────────────────────────────
+    # Assemble task log + L1/L2/prior blocks.  Emitted as a synthetic
+    # user turn so that messages[0] stays static.
+    volatile_parts: List[str] = []
+    if task_log:
+        entries = "\n".join(f"  {e}" for e in task_log[-20:])
+        volatile_parts.append(
+            "[RECENT ACTION LOG — what has been done so far]\n"
+            + entries
+            + "\n[END ACTION LOG]"
+        )
+    volatile_parts.extend(extra_system_parts)
 
-    messages: List[Dict] = [{"role": "system", "content": system_content}]
+    if volatile_parts:
+        messages.append({
+            "role": "user",
+            "content": _CTX_LABEL + "\n\n" + "\n\n".join(volatile_parts),
+        })
+        messages.append({
+            "role": "assistant",
+            "content": _CTX_ACK,
+        })
 
+    # ── messages[3+]: actual conversation ─────────────────────────────────
     for row in non_system_history:
         # Canonical 6-tuple: (role, content, tool_id, tool_name, tool_args, error_flag)
-        # error_flag is used by the UI and importance scorer but is not sent to the model.
+        # error_flag is used by the UI and importance scorer; not sent to model.
         role, content, tool_id, tool_name, tool_args, _error_flag = row
 
         if role == "user":
             messages.append({"role": "user", "content": content})
 
         elif role == "_context_note":
-            # Demoted mid-conversation system row — surface as a user message
-            # so the model still sees the context without violating the
-            # single-system-message constraint.
-            messages.append({"role": "user", "content": f"[CONTEXT NOTE]\n{content}"})
+            # Demoted mid-conversation system row — surface as a labelled
+            # user message so the model still sees the context.
+            messages.append({
+                "role": "user",
+                "content": f"[CONTEXT NOTE]\n{content}",
+            })
 
         elif role == "assistant":
             if tool_id:
@@ -108,7 +170,10 @@ def build_messages(
                     "tool_calls": [{
                         "id": tool_id,
                         "type": "function",
-                        "function": {"name": tool_name, "arguments": tool_args},
+                        "function": {
+                            "name": tool_name,
+                            "arguments": tool_args,
+                        },
                     }],
                 })
             else:
