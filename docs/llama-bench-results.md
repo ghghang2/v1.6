@@ -80,3 +80,10 @@ ggml_cuda_init: found 1 CUDA devices:
 | qwen35 ?B Q8_0                 |   8.86 GiB |     8.95 B | CUDA       |  99 |     512 |  tg128 @ d32768 |         12.70 ± 0.30 |
 
 build: ecd99d6a9 (8193)
+
+ballpark for fa 1, ctk/ctv q8
+prompt eval time =     388.66 ms /   196 tokens (    1.98 ms per token,   504.29 tokens per second)
+       eval time =    2286.82 ms /    44 tokens (   51.97 ms per token,    19.24 tokens per second)
+      total time =    2675.48 ms /   240 tokens
+
+      
