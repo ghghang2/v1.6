@@ -1,6 +1,8 @@
 .*
 sample_data
 llama-server
+llama-bench
+llama-*
 __pycache__
 *.log
 *.yml
