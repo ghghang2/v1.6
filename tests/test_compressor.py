@@ -20,8 +20,6 @@ import pytest
 # ---------------------------------------------------------------------------
 _config_mock = MagicMock()
 _config_mock.MAX_TOOL_OUTPUT_CHARS = 200   # deliberately small for tests
-sys.modules.setdefault("nbchat", MagicMock())
-sys.modules.setdefault("nbchat.core", MagicMock())
 sys.modules["nbchat.core.config"] = _config_mock
 
 # Now import the module under test.

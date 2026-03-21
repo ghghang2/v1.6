@@ -17,8 +17,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 # ── Stub heavy dependencies ────────────────────────────────────────────────
-sys.modules.setdefault("nbchat", MagicMock())
-sys.modules.setdefault("nbchat.core", MagicMock())
 
 from nbchat.core.monitoring import (
     SessionMonitor,

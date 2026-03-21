@@ -19,9 +19,6 @@ import pytest
 # ---------------------------------------------------------------------------
 # The module has no heavyweight dependencies so we can import directly.
 # ---------------------------------------------------------------------------
-sys.modules.setdefault("nbchat", MagicMock())
-sys.modules.setdefault("nbchat.ui", MagicMock())
-
 from nbchat.ui.chat_builder import build_messages, _CTX_LABEL, _CTX_ACK
 
 SYSTEM = "You are a helpful assistant."

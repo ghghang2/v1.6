@@ -18,15 +18,6 @@ import pytest
 # ---------------------------------------------------------------------------
 # Stub out all heavy dependencies before importing the module.
 # ---------------------------------------------------------------------------
-sys.modules.setdefault("nbchat", MagicMock())
-sys.modules.setdefault("nbchat.core", MagicMock())
-sys.modules.setdefault("nbchat.core.utils", MagicMock())
-
-# Provide a real lazy_import that just returns the mock module.
-_lazy = MagicMock()
-_lazy.side_effect = lambda name: sys.modules.get(name, MagicMock())
-sys.modules["nbchat.core.utils"].lazy_import = _lazy
-
 from nbchat.ui.context_manager import ContextMixin, L2_WRITE_THRESHOLD
 
 
