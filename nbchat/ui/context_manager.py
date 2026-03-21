@@ -409,7 +409,13 @@ class ContextMixin:
         # "analysis" rows are reasoning traces — display-only, dropped by
         # build_messages, must not consume the MAX_WINDOW_ROWS budget.
         non_analysis_count = sum(1 for r in window if r[0] != "analysis")
-        if non_analysis_count > MAX_WINDOW_ROWS:
+        # Reserve space for prefix rows (L1, L2, prior context) that will be
+        # added later. In the worst case, all 3 prefix rows are system rows
+        # (non-analysis).
+        prefix_reserve = 3  # Maximum possible prefix rows
+        effective_max = max(0, MAX_WINDOW_ROWS - prefix_reserve)
+
+        if effective_max > 0 and non_analysis_count > effective_max:
             # Walk backwards through window to find the start index that
             # leaves exactly MAX_WINDOW_ROWS non-analysis rows remaining.
             keep = 0
@@ -417,7 +423,7 @@ class ContextMixin:
             for i in range(len(window) - 1, -1, -1):
                 if window[i][0] != "analysis":
                     keep += 1
-                if keep == MAX_WINDOW_ROWS:
+                if keep == effective_max:
                     secondary_start = i
                     break
             # Advance forward to the next user row so we never orphan the

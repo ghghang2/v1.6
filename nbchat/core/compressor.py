@@ -335,7 +335,7 @@ def _js_skeleton(text: str, max_chars: int) -> Optional[str]:
         r'|let\s+\w+\s*='
         r'|var\s+\w+\s*='
         r'|interface\s+\w+'
-        r'|type\s+\w+\s*='
+        r'|type\s+\w+[\s<]*[\w,<>=\s?]*[\s>=]*'
         r'|enum\s+\w+'
         r')'
     )

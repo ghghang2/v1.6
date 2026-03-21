@@ -545,9 +545,6 @@ class TestRetryLogic:
             # Second call: use the real mock path
             return json.dumps({"status": "success", "url": "https://example.com", "title": "", "content": ""})
 
-        with patch("nbchat.tools.browser.browser.__code__"):
-            pass  # Can't easily patch _run(); test via goto side_effect instead
-
         # Test via network error on goto that matches _TRANSIENT_MARKERS
         pw2, _, _, page2 = _make_playwright_mock()
         page2.goto.side_effect = [
