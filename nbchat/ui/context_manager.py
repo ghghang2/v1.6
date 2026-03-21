@@ -31,6 +31,7 @@ import re
 from typing import List, Optional, Tuple
 
 from nbchat.core.utils import lazy_import
+from nbchat.core import config
 
 _log = logging.getLogger("nbchat.compaction")
 
@@ -39,17 +40,17 @@ _Row = Tuple[str, str, str, str, str, int]
 
 # ── Tuning knobs ──────────────────────────────────────────────────────────────
 # Lowered from 3.5: successful completions now score ~2.5 and will be persisted.
-L2_WRITE_THRESHOLD = 2.0
+L2_WRITE_THRESHOLD = config.L2_WRITE_THRESHOLD
 # Max episodic entries injected per API call.
-L2_RETRIEVAL_LIMIT = 5
+L2_RETRIEVAL_LIMIT = config.L2_RETRIEVAL_LIMIT
 # Minimum importance score for L2 entries retrieved by importance (not entity match).
-L2_MIN_IMPORTANCE_FOR_RETRIEVAL = 3.0
+L2_MIN_IMPORTANCE_FOR_RETRIEVAL = config.L2_MIN_IMPORTANCE_FOR_RETRIEVAL
 # How many active entities to keep in L1 core memory.
-CORE_MEMORY_ACTIVE_ENTITIES_LIMIT = 20
+CORE_MEMORY_ACTIVE_ENTITIES_LIMIT = config.CORE_MEMORY_ACTIVE_ENTITIES_LIMIT
 # How many recent error strings to keep in L1.
-CORE_MEMORY_ERROR_HISTORY_LIMIT = 5
+CORE_MEMORY_ERROR_HISTORY_LIMIT = config.CORE_MEMORY_ERROR_HISTORY_LIMIT
 # Chars of tool output passed to the summariser.
-_SUMMARIZER_TOOL_CHARS = 2_000
+_SUMMARIZER_TOOL_CHARS = config.SUMMARIZER_TOOL_CHARS
 # Keywords that signal a user correction.
 _CORRECTION_KEYWORDS = (
     "actually", "wait,", "no,", "wrong", "instead", "correct",

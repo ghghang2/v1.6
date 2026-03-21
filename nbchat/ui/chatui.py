@@ -32,7 +32,7 @@ class ChatUI(ContextMixin, ConversationMixin):
 
     MAX_TOOL_TURNS = config.MAX_TOOL_TURNS
     WINDOW_TURNS = config.WINDOW_TURNS
-    MAX_VISIBLE_WIDGETS = 120
+    MAX_VISIBLE_WIDGETS = config.MAX_VISIBLE_WIDGETS
 
     def __init__(self):
         db = lazy_import("nbchat.core.db")
