@@ -235,7 +235,8 @@ class ChatUI(ContextMixin, ConversationMixin):
                     # Parse llamacpp:requests_processing metric
                     # This toggles 1 if server is processing, 0 if idle
                     server_processing = False
-                    tps = 0.0
+                    prompt_tps = 0.0
+                    predict_tps = 0.0
                     
                     for line in metrics_text.splitlines():
                         # Check if server is processing requests
@@ -247,8 +248,17 @@ class ChatUI(ContextMixin, ConversationMixin):
                                 except ValueError:
                                     pass
                         
-                        # Parse TPS (tokens per second) from eval_time metric
-                        if "llamacpp:eval_time" in line.lower() or "eval_time" in line.lower():
+                        # Parse PromptTS (prompt tokens per second) from prompt_tokens_seconds metric
+                        if "prompt_tokens_seconds" in line.lower() or "promptts" in line.lower():
+                            m = re.search(r"(\d+(?:\.\d+)?)\s*tokens/s", line, re.IGNORECASE)
+                            if m:
+                                try:
+                                    prompt_tps = float(m.group(1))
+                                except ValueError:
+                                    pass
+                        
+                        # Parse PredictTS (predicted tokens per second) from predicted_tokens_seconds metric
+                        if "predicted_tokens_seconds" in line.lower() or "predictts" in line.lower():
                             # Look for TPS value in the metrics
                             m = re.search(r"(\d+(?:\.\d+)?)\s*tokens/s", line, re.IGNORECASE)
                             if m:
@@ -266,7 +276,8 @@ class ChatUI(ContextMixin, ConversationMixin):
                     emoji = "🟢" if proc else "⚫"
                     content = (
                         f'<b>Server</b> {emoji}<br>'
-                        f'<b>TPS:</b> <code style="color:{CODE_COLOR};">{tps}</code><br>'
+                        f'<b>PromptTS:</b> <code style="color:{CODE_COLOR};">{prompt_tps}</code><br>'
+                        f'<b>PredictTS:</b> <code style="color:{CODE_COLOR};">{predict_tps}</code><br>'
                         f'<i>{time.strftime("%H:%M:%S")}</i>'
                     )
                     try:
