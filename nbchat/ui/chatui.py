@@ -250,7 +250,7 @@ class ChatUI(ContextMixin, ConversationMixin):
                         
                         # Parse PromptTS (prompt tokens per second) from prompt_tokens_seconds metric
                         if "prompt_tokens_seconds" in line.lower() or "promptts" in line.lower():
-                            m = re.search(r"(\d+(?:\.\d+)?)\s*tokens/s", line, re.IGNORECASE)
+                            m = re.search(r"prompt_tokens_seconds\s+([\d.]+)", line)
                             if m:
                                 try:
                                     prompt_tps = float(m.group(1))
@@ -260,10 +260,10 @@ class ChatUI(ContextMixin, ConversationMixin):
                         # Parse PredictTS (predicted tokens per second) from predicted_tokens_seconds metric
                         if "predicted_tokens_seconds" in line.lower() or "predictts" in line.lower():
                             # Look for TPS value in the metrics
-                            m = re.search(r"(\d+(?:\.\d+)?)\s*tokens/s", line, re.IGNORECASE)
+                            m = re.search(r"predicted_tokens_seconds\s+([\d.]+)", line)
                             if m:
                                 try:
-                                    tps = float(m.group(1))
+                                    predict_tps = float(m.group(1))
                                 except ValueError:
                                     pass
                     
