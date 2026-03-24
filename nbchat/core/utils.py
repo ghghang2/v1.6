@@ -11,6 +11,7 @@ _db_module = None
 _config_module = None
 _compressor_module = None
 _monitoring_module = None
+_whatsapp_agent_module = None
 
 
 def lazy_import(module_name: str):
@@ -18,7 +19,7 @@ def lazy_import(module_name: str):
 
     The function mirrors the behaviour of the legacy ``lazy_import``.
     """
-    global _client, _tools, _db_module, _config_module, _compressor_module
+    global _client, _tools, _db_module, _config_module, _compressor_module, _whatsapp_agent_module
 
     if module_name == "nbchat.core.client":
         if _client is None:
@@ -55,6 +56,12 @@ def lazy_import(module_name: str):
             import nbchat.core.monitoring as monitoring_module
             _monitoring_module = monitoring_module
         return _monitoring_module
+    
+    elif module_name == "nbchat.channels.whatsapp_agent":
+        if _whatsapp_agent_module is None:
+            import nbchat.channels.whatsapp_agent as wa_module
+            _whatsapp_agent_module = wa_module
+        return _whatsapp_agent_module
 
     else:
         raise ValueError(f"Unknown module {module_name}")

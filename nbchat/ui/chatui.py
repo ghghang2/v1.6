@@ -4,6 +4,17 @@ Composes ContextMixin and ConversationMixin into a single widget-based
 chat interface.  This file contains only widget creation, history
 rendering, and event handling.  Context management lives in
 context_manager.py and the conversation loop in conversation.py.
+
+Widget output is implemented by overriding the five output hooks defined
+on ConversationMixin:
+
+    _on_stream_token        → update live assistant widget value
+    _on_stream_reasoning    → update live reasoning widget value
+    _on_tool_display        → append rendered tool-result widget
+    _on_agent_message       → append rendered assistant widget (notices)
+    _on_stream_complete     → finalize assistant widget after streaming
+
+These overrides are collected in the "Output hook overrides" section below.
 """
 from __future__ import annotations
 
@@ -55,6 +66,11 @@ class ChatUI(ContextMixin, ConversationMixin):
         # is idle between calls.
         self._tool_running = False
 
+        # Live streaming widget references — reset to None before each turn.
+        # _on_stream_token and _on_stream_reasoning create these on first chunk.
+        self._reasoning_widget: widgets.HTML | None = None
+        self._assistant_widget: widgets.HTML | None = None
+
         # Initialise per-session compressor state for lossless learning.
         comp = lazy_import("nbchat.core.compressor")
         comp.init_session(self.session_id)
@@ -64,6 +80,69 @@ class ChatUI(ContextMixin, ConversationMixin):
         self._load_history()
         display(self.layout)
         self._inject_scroll_preservation()
+
+    # ------------------------------------------------------------------
+    # Output hook overrides (ConversationMixin interface)
+    # ------------------------------------------------------------------
+
+    def _on_stream_token(self, content: str) -> None:
+        """Update the live assistant widget with accumulated content."""
+        if self._assistant_widget is None:
+            self._assistant_widget = renderer.render_placeholder("assistant")
+            children = list(self.chat_history.children)
+            if self._reasoning_widget in children:
+                children.insert(
+                    children.index(self._reasoning_widget) + 1,
+                    self._assistant_widget,
+                )
+            else:
+                children.append(self._assistant_widget)
+            self.chat_history.children = children
+        self._assistant_widget.value = renderer.render_assistant(content).value
+
+    def _on_stream_reasoning(self, reasoning: str) -> None:
+        """Update the live reasoning widget with accumulated reasoning text."""
+        if self._reasoning_widget is None:
+            self._reasoning_widget = renderer.render_placeholder("reasoning")
+            self._append(self._reasoning_widget)
+        self._reasoning_widget.value = renderer.render_reasoning(reasoning).value
+
+    def _on_tool_display(self, raw_result: str, tool_name: str, tool_args: str) -> None:
+        """Append a rendered tool-result widget to the chat panel."""
+        self._append(renderer.render_tool(raw_result, tool_name, tool_args))
+
+    def _on_agent_message(self, text: str) -> None:
+        """Append a rendered assistant widget for warnings / error notices."""
+        self._append(renderer.render_assistant(text))
+
+    def _on_stream_complete(self, content: str, tool_calls: list | None) -> None:
+        """Finalize the assistant widget after streaming ends.
+
+        - If tool_calls arrived: update widget to show tool-call display.
+        - If content arrived with no widget yet (edge case): append widget now.
+        - Reset streaming widget refs for the next turn.
+        """
+        if tool_calls:
+            if self._assistant_widget is not None:
+                self._assistant_widget.value = renderer.render_assistant_with_tools(
+                    content, tool_calls
+                ).value
+            else:
+                w = renderer.render_assistant_with_tools("", tool_calls)
+                children = list(self.chat_history.children)
+                if self._reasoning_widget in children:
+                    children.insert(
+                        children.index(self._reasoning_widget) + 1, w
+                    )
+                else:
+                    children.append(w)
+                self.chat_history.children = children
+        elif self._assistant_widget is None and content:
+            self._append(renderer.render_assistant(content))
+
+        # Reset for next turn.
+        self._reasoning_widget = None
+        self._assistant_widget = None
 
     # ------------------------------------------------------------------
     # Scroll preservation
@@ -102,7 +181,6 @@ class ChatUI(ContextMixin, ConversationMixin):
 
     def _reset_session_state(self) -> None:
         """Clear all per-session in-memory state and associated DB rows."""
-        # Flush monitoring data for the departing session before clearing it.
         try:
             mon = lazy_import("nbchat.core.monitoring")
             db = lazy_import("nbchat.core.db")
@@ -118,7 +196,6 @@ class ChatUI(ContextMixin, ConversationMixin):
             db.delete_episodic_for_session(self.session_id)
         except Exception:
             pass
-        # Clear session-local compressor state (lossless set, recent_compressed).
         try:
             comp = lazy_import("nbchat.core.compressor")
             comp.clear_session(self.session_id)
@@ -219,27 +296,25 @@ class ChatUI(ContextMixin, ConversationMixin):
             from nbchat.core.config import SERVER_URL
             import urllib.request
             import urllib.error
-            
+
             while True:
                 try:
-                    # Fetch metrics from the llama-server HTTP endpoint
                     metrics_url = f"{SERVER_URL}/metrics"
                     try:
                         with urllib.request.urlopen(metrics_url, timeout=5) as response:
                             metrics_text = response.read().decode("utf-8", errors="ignore")
                     except (urllib.error.URLError, urllib.error.HTTPError) as e:
-                        self.metrics_output.value = f"<i>Cannot connect to metrics endpoint: {e}</i>"
+                        self.metrics_output.value = (
+                            f"<i>Cannot connect to metrics endpoint: {e}</i>"
+                        )
                         time.sleep(1)
                         continue
-                    
-                    # Parse llamacpp:requests_processing metric
-                    # This toggles 1 if server is processing, 0 if idle
+
                     server_processing = False
                     prompt_tps = 0.0
                     predict_tps = 0.0
-                    
+
                     for line in metrics_text.splitlines():
-                        # Check if server is processing requests
                         if line.startswith("llamacpp:requests_processing"):
                             parts = line.split()
                             if len(parts) >= 2:
@@ -247,37 +322,30 @@ class ChatUI(ContextMixin, ConversationMixin):
                                     server_processing = float(parts[1]) == 1.0
                                 except ValueError:
                                     pass
-                        
-                        # Parse PromptTS (prompt tokens per second) from prompt_tokens_seconds metric
-                        if "prompt_tokens_seconds" in line.lower() or "promptts" in line.lower():
-                            m = re.search(r"prompt_tokens_seconds\s+([\d.]+)", line)
-                            if m:
-                                try:
-                                    prompt_tps = float(m.group(1))
-                                except ValueError:
-                                    pass
-                        
-                        # Parse PredictTS (predicted tokens per second) from predicted_tokens_seconds metric
-                        if "predicted_tokens_seconds" in line.lower() or "predictts" in line.lower():
-                            # Look for TPS value in the metrics
-                            m = re.search(r"predicted_tokens_seconds\s+([\d.]+)", line)
-                            if m:
-                                try:
-                                    predict_tps = float(m.group(1))
-                                except ValueError:
-                                    pass
-                    
+                        m = re.search(r"prompt_tokens_seconds\s+([\d.]+)", line)
+                        if m:
+                            try:
+                                prompt_tps = float(m.group(1))
+                            except ValueError:
+                                pass
+                        m = re.search(r"predicted_tokens_seconds\s+([\d.]+)", line)
+                        if m:
+                            try:
+                                predict_tps = float(m.group(1))
+                            except ValueError:
+                                pass
+
                     # proc is True when the LLM server is actively processing
-                    # tokens OR when a tool is currently executing.  The LLM
-                    # server is legitimately idle between tool calls, but the
-                    # agent loop is still running — showing black during tool
-                    # execution was a false signal to the user.
+                    # OR when a tool is executing (server is legitimately idle
+                    # between tool calls but the agent loop is still running).
                     proc = server_processing or self._tool_running
                     emoji = "🟢" if proc else "⚫"
                     content = (
                         f'<b>Server</b> {emoji}<br>'
-                        f'<b>PromptTS:</b> <code style="color:{CODE_COLOR};">{prompt_tps}</code><br>'
-                        f'<b>PredictTS:</b> <code style="color:{CODE_COLOR};">{predict_tps}</code><br>'
+                        f'<b>PromptTS:</b> <code style="color:{CODE_COLOR};">'
+                        f'{prompt_tps:.1f}</code><br>'
+                        f'<b>PredictTS:</b> <code style="color:{CODE_COLOR};">'
+                        f'{predict_tps:.1f}</code><br>'
                         f'<i>{time.strftime("%H:%M:%S")}</i>'
                     )
                     try:
@@ -309,20 +377,17 @@ class ChatUI(ContextMixin, ConversationMixin):
         self._refresh_monitoring_panel()
 
     def _refresh_monitoring_panel(self) -> None:
-        """Re-render the monitoring sidebar widget from current session data.
-
-        Called after each tool execution and at the end of each conversation
-        turn — not on a timer.  Safe to call from the background conversation
-        thread; ipywidgets handles the widget value update thread-safely.
-        """
+        """Re-render the monitoring sidebar widget from current session data."""
         try:
             from nbchat.ui.styles import CODE_COLOR
             mon = lazy_import("nbchat.core.monitoring")
             db = lazy_import("nbchat.core.db")
 
-            session_report = mon.get_session_monitor(self.session_id).get_session_report()
+            session_report = mon.get_session_monitor(
+                self.session_id
+            ).get_session_report()
 
-            global_report: dict | None = None
+            global_report = None
             try:
                 raw = db.load_global_monitoring_stats()
                 if raw:
@@ -334,14 +399,12 @@ class ChatUI(ContextMixin, ConversationMixin):
                 session_report, global_report, code_color=CODE_COLOR
             )
         except Exception:
-            pass  # monitoring panel must never crash the agent loop
+            pass
 
     def _render_history(self):
         """Render the windowed slice of history into the chat panel."""
         window, effective_cut = self._window()
 
-        # effective_cut is the number of self.history rows excluded from the
-        # window — the exact count for the "omitted messages" notice.
         children = []
         if effective_cut > 0:
             children.append(renderer.render_system(
@@ -412,7 +475,6 @@ class ChatUI(ContextMixin, ConversationMixin):
         db = lazy_import("nbchat.core.db")
         self.session_id = str(uuid.uuid4())
         self._reset_session_state()
-        # Initialise compressor state for the new session.
         comp = lazy_import("nbchat.core.compressor")
         comp.init_session(self.session_id)
         options = list(db.get_session_ids())
@@ -426,7 +488,6 @@ class ChatUI(ContextMixin, ConversationMixin):
         if change["new"]:
             self.session_id = change["new"]
             self._reset_session_state()
-            # Initialise compressor state for the switched-to session.
             comp = lazy_import("nbchat.core.compressor")
             comp.init_session(self.session_id)
             self._load_history()
@@ -443,7 +504,6 @@ class ChatUI(ContextMixin, ConversationMixin):
             self._stream_thread.join()
 
         self._prune_widgets()
-        # Canonical 6-tuple: error_flag=0 for user messages
         self.history.append(("user", user_input, "", "", "", 0))
         self._append(renderer.render_user(user_input))
         db.log_message(self.session_id, "user", user_input)

@@ -12,6 +12,22 @@ Handles the agentic tool-calling loop and streaming response.
     the model's subsequent response has a valid preceding user message.
   • compress_tool_output receives the session_id so the session-local lossless
     learning and repeat-read detection are active.
+
+Output decoupling
+-----------------
+ConversationMixin does not reference ipywidgets or chat_renderer directly.
+All UI side-effects are routed through five output hooks that default to
+no-ops, enabling headless use by WhatsApp and any future channels:
+
+    _on_stream_token(content)           called each chunk during LLM streaming
+    _on_stream_reasoning(reasoning)     called each chunk of reasoning/thinking
+    _on_tool_display(raw, name, args)   called after each tool execution
+    _on_agent_message(text)             called for warnings / error notices
+    _on_stream_complete(content, tcs)   called once after streaming finishes
+
+ChatUI overrides all five with ipywidgets implementations.
+WhatsAppAgent (and any future channel) inherits the no-op defaults and
+captures the final response text via _on_stream_token / _on_stream_complete.
 """
 from __future__ import annotations
 
@@ -33,14 +49,64 @@ def _is_error_content(content: str) -> bool:
 
 
 class ConversationMixin:
-    """Mixed into ChatUI — expects self.history, self.task_log,
-    self.system_prompt, self.model_name, self.session_id,
-    self._stop_streaming, self._append, self._hard_trim,
-    self._log_action, self._window, and all
-    renderer/executor/chat_builder imports to be available."""
+    """Mixed into ChatUI and headless channel agents.
+
+    Required attributes on the host class:
+        self.history, self.task_log, self.system_prompt, self.model_name,
+        self.session_id, self._stop_streaming, self._tool_running,
+        self._hard_trim, self._log_action, self._window, self.MAX_TOOL_TURNS
+    """
+
+    # ── Output hooks — override in subclasses for UI or channel output ────
+
+    def _on_stream_token(self, content: str) -> None:
+        """Called with accumulated assistant text after each streamed chunk.
+
+        UI: update live assistant widget value.
+        Headless: no-op — final text captured from _stream_response return value.
+        """
+
+    def _on_stream_reasoning(self, reasoning: str) -> None:
+        """Called with accumulated reasoning/thinking text after each chunk.
+
+        UI: update live reasoning widget value.
+        Headless: no-op.
+        """
+
+    def _on_tool_display(self, raw_result: str, tool_name: str, tool_args: str) -> None:
+        """Called after each tool execution with the raw (uncompressed) result.
+
+        UI: render and append a tool-result widget.
+        Headless: no-op — tool results are persisted to history/DB as normal.
+        """
+
+    def _on_agent_message(self, text: str) -> None:
+        """Called when the loop needs to surface a notice to the user.
+
+        Used for: max-tool-turns warning, unhandled exception notice.
+        UI: render and append an assistant widget.
+        Headless: no-op (text is also logged at debug level).
+        """
+
+    def _on_stream_complete(self, content: str, tool_calls: list | None) -> None:
+        """Called once after streaming finishes with final accumulated state.
+
+        UI: finalize the assistant widget (show tool-call display if present;
+            append plain assistant widget when content arrived with no widget).
+        Headless: no-op — content already captured via _on_stream_token.
+        """
+
+    # ── Passthrough hooks already overridden by ChatUI ────────────────────
+
+    def _append(self, widget) -> None:
+        """Append a widget to the chat panel.  No-op in headless mode."""
+
+    def _refresh_monitoring_panel(self) -> None:
+        """Refresh the monitoring sidebar widget.  No-op in headless mode."""
+
+    # ── Conversation entry point ──────────────────────────────────────────
 
     def _process_conversation_turn(self) -> None:
-        from nbchat.ui import chat_renderer as renderer
         from nbchat.ui import tool_executor as executor
         from nbchat.ui import chat_builder
         from nbchat.core import compressor as comp
@@ -50,27 +116,22 @@ class ConversationMixin:
         real_client = _client_mod.get_client()
         try:
             self._run_conversation_loop(
-                real_client, db, renderer, executor, chat_builder, comp
+                real_client, db, executor, chat_builder, comp
             )
         except Exception as exc:
-            _log.debug(
-                f"_process_conversation_turn crashed: "
-                f"{type(exc).__name__}: {exc}",
-                exc_info=True,
-            )
-            self._append(renderer.render_assistant(
+            msg = (
                 f"Conversation loop stopped unexpectedly: "
                 f"{type(exc).__name__}: {exc}"
-            ))
+            )
+            _log.debug(msg, exc_info=True)
+            self._on_agent_message(msg)
 
     def _run_conversation_loop(
-        self, real_client, db, renderer, executor, chat_builder, comp
+        self, real_client, db, executor, chat_builder, comp
     ) -> None:
         from nbchat.core import monitoring as mon
 
         # ── L1: update goal from latest user message ──────────────────────
-        # Done before building messages so the very first API call already
-        # has fresh core memory injected via _window().
         try:
             last_user = next(
                 (row[1] for row in reversed(self.history) if row[0] == "user"),
@@ -81,7 +142,6 @@ class ConversationMixin:
         except Exception as exc:
             _log.debug(f"L1 goal update failed: {exc}")
 
-        # _window() returns (window_rows, effective_cut); only rows needed here.
         window, _cut = self._window()
         messages = chat_builder.build_messages(
             window, self.system_prompt, self.task_log
@@ -99,8 +159,6 @@ class ConversationMixin:
             if self._stop_streaming:
                 break
 
-            # Measure volatile block (messages[1]) length before each call so
-            # the monitor can track turn-over-turn delta alongside cache metrics.
             volatile_len = (
                 len(messages[1]["content"])
                 if len(messages) > 2 and messages[1].get("role") == "user"
@@ -111,16 +169,12 @@ class ConversationMixin:
                 real_client, messages
             )
 
-            # Record cache alignment metrics for this LLM call.  Parsing the
-            # server log here gives us sim_best, new_tokens, and invalidations
-            # for the completion that just finished.
             try:
                 monitor.record_llm_call(volatile_len)
             except Exception:
                 pass
 
             if reasoning:
-                # analysis rows are display-only; error_flag not meaningful
                 self.history.append(("analysis", reasoning, "", "", "", 0))
                 db.log_message(self.session_id, "analysis", reasoning)
 
@@ -128,13 +182,12 @@ class ConversationMixin:
                 if content:
                     self.history.append(("assistant", content, "", "", "", 0))
                     db.log_message(self.session_id, "assistant", content)
-                # Turn complete — refresh monitoring with final LLM call metrics.
                 self._refresh_monitoring_panel()
                 break
 
             if turn == self.MAX_TOOL_TURNS:
                 warning = f"Maximum tool turns ({self.MAX_TOOL_TURNS}) reached."
-                self._append(renderer.render_assistant(warning))
+                self._on_agent_message(warning)
                 self.history.append(("assistant", warning, "", "", "", 0))
                 db.log_message(self.session_id, "assistant", warning)
                 break
@@ -160,15 +213,12 @@ class ConversationMixin:
                     "not yet attempted."
                 )
                 _log.debug("stall detected — injecting interrupt")
-                # Persist so the DB doesn't contain an orphaned assistant
-                # response with no preceding user message.
                 self.history.append(("user", stall_msg, "", "", "", 0))
                 db.log_message(self.session_id, "user", stall_msg)
                 messages.append({"role": "user", "content": stall_msg})
                 _recent_call_sets.clear()
 
             # ── Build assistant message for model history ─────────────────
-            # content must be None (not "") when tool_calls are present.
             msg_for_model = {
                 "role": "assistant",
                 "content": content or None,
@@ -176,13 +226,11 @@ class ConversationMixin:
             }
             messages.append(msg_for_model)
 
-            storable_msg = {
+            full_msg_json = json.dumps({
                 "role": "assistant",
                 "content": content or None,
                 "tool_calls": tool_calls,
-            }
-            full_msg_json = json.dumps(storable_msg)
-            # assistant_full rows don't have a meaningful error_flag
+            })
             self.history.append(
                 ("assistant_full", "", "full", "full", full_msg_json, 0)
             )
@@ -194,14 +242,13 @@ class ConversationMixin:
                 tool_name = tc["function"]["name"]
                 tool_args = tc["function"]["arguments"]
 
-                # Signal to the metrics updater that processing is ongoing
-                # even while the LLM server is idle between calls.
                 self._tool_running = True
                 try:
                     raw_result = executor.run_tool(tool_name, tool_args)
                 finally:
                     self._tool_running = False
-                self._append(renderer.render_tool(raw_result, tool_name, tool_args))
+
+                self._on_tool_display(raw_result, tool_name, tool_args)
 
                 compressed = comp.compress_tool_output(
                     tool_name,
@@ -209,7 +256,7 @@ class ConversationMixin:
                     raw_result,
                     model=self.model_name,
                     client=real_client,
-                    session_id=self.session_id,   # enables lossless learning
+                    session_id=self.session_id,
                 )
 
                 model_result = (
@@ -220,8 +267,6 @@ class ConversationMixin:
 
                 self._log_action(tool_name, tool_args, model_result)
 
-                # Compute error_flag from raw output before compression may
-                # have stripped error signals.
                 error_flag = 1 if _is_error_content(raw_result) else 0
                 self.history.append(
                     ("tool", raw_result, tc["id"], tool_name, tool_args, error_flag)
@@ -236,9 +281,7 @@ class ConversationMixin:
                     "content": model_result,
                 })
 
-                # ── L1 + L2 update after each tool call ───────────────────
-                # Score against raw_result so error signals are not missed if
-                # the compressor stripped them from model_result.
+                # ── L1 + L2 update ────────────────────────────────────────
                 try:
                     exchange_msgs = [
                         msg_for_model,
@@ -254,16 +297,15 @@ class ConversationMixin:
                 except Exception as exc:
                     _log.debug(f"L1/L2 post-tool update failed: {exc}")
 
-                # ── Monitoring: record compression outcome ────────────────
+                # ── Monitoring ────────────────────────────────────────────
                 try:
                     comp_stats = comp.get_compression_stats().get(tool_name, {})
                     last_strategy = next(
                         iter(comp_stats.get("strategies", {})), ""
                     )
-                    was_compressed = len(compressed) < len(raw_result)
                     monitor.record_tool_call(
                         tool_name=tool_name,
-                        was_compressed=was_compressed,
+                        was_compressed=len(compressed) < len(raw_result),
                         had_error=bool(error_flag),
                         strategy=last_strategy,
                         input_chars=len(raw_result),
@@ -274,17 +316,22 @@ class ConversationMixin:
                 except Exception:
                     pass
 
-                # Refresh monitoring panel after each tool call so warnings
-                # surface immediately rather than waiting for turn end.
                 self._refresh_monitoring_panel()
 
+    # ── Streaming ─────────────────────────────────────────────────────────
+
     def _stream_response(self, real_client, messages):
-        from nbchat.ui import chat_renderer as renderer
+        """Run one LLM completion, fire output hooks during streaming.
+
+        Does not reference ipywidgets or chat_renderer.
+
+        Returns
+        -------
+        (reasoning_accum, content_accum, tool_calls, finish_reason)
+        """
         tools = lazy_import("nbchat.tools")
         config = lazy_import("nbchat.core.config")
 
-        reasoning_widget = None
-        assistant_widget = None
         reasoning_accum = ""
         content_accum = ""
         tool_buffer: dict = {}
@@ -317,30 +364,13 @@ class ConversationMixin:
                             entry["function"]["arguments"] += tc.function.arguments
 
                 if getattr(delta, "reasoning_content", None):
-                    if reasoning_widget is None:
-                        reasoning_widget = renderer.render_placeholder("reasoning")
-                        self._append(reasoning_widget)
                     reasoning_accum += delta.reasoning_content
-                    reasoning_widget.value = renderer.render_reasoning(
-                        reasoning_accum
-                    ).value
+                    self._on_stream_reasoning(reasoning_accum)
 
                 if delta.content:
-                    if assistant_widget is None:
-                        assistant_widget = renderer.render_placeholder("assistant")
-                        children = list(self.chat_history.children)
-                        if reasoning_widget in children:
-                            children.insert(
-                                children.index(reasoning_widget) + 1,
-                                assistant_widget,
-                            )
-                        else:
-                            children.append(assistant_widget)
-                        self.chat_history.children = children
                     content_accum += delta.content
-                    assistant_widget.value = renderer.render_assistant(
-                        content_accum
-                    ).value
+                    self._on_stream_token(content_accum)
+
         except Exception as exc:
             if "now finding less tool calls" in str(exc):
                 _log.warning(
@@ -363,26 +393,9 @@ class ConversationMixin:
             if tool_buffer else None
         )
 
-        if tool_calls:
-            if assistant_widget is not None:
-                assistant_widget.value = renderer.render_assistant_with_tools(
-                    content_accum, tool_calls
-                ).value
-            else:
-                assistant_widget = renderer.render_assistant_with_tools(
-                    "", tool_calls
-                )
-                children = list(self.chat_history.children)
-                if reasoning_widget in children:
-                    children.insert(
-                        children.index(reasoning_widget) + 1, assistant_widget
-                    )
-                else:
-                    children.append(assistant_widget)
-                self.chat_history.children = children
-        elif assistant_widget is None and content_accum:
-            assistant_widget = renderer.render_assistant(content_accum)
-            self._append(assistant_widget)
+        # Notify subclass that streaming is complete with final state.
+        # UI subclass uses this to finalize the assistant widget display.
+        self._on_stream_complete(content_accum, tool_calls)
 
         return reasoning_accum, content_accum, tool_calls, finish_reason
 
