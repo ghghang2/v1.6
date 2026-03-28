@@ -20,9 +20,12 @@ _log = logging.getLogger("nbchat.compaction")
 # Theme
 # ---------------------------------------------------------------------------
 
-BACKGROUND_LIGHT = "#f5f5f5"
-BACKGROUND_ASSISTANT = "#F0FFF0"
-CODE_COLOR = "#006400"
+# Dark theme colors
+BACKGROUND_LIGHT = "#1a1a1a"
+BACKGROUND_ASSISTANT = "#2d2d2d"
+CODE_COLOR = "#98c379"
+TEXT_COLOR = "#e0e0e0"
+LINK_COLOR = "#61dafb"
 
 PADDING = "0px"
 BORDER_RADIUS = "0px"
@@ -140,7 +143,7 @@ def system_message_html(content: str) -> str:
 def compacted_summary_html(content: str) -> str:
     inner = (
         f'<details style="margin:0;padding:0;">'
-        f'<summary style="margin:0;display:block;"><b>🗜️ Compacted earlier conversation</b></summary>'
+        f'<summary style="margin:0;display:block;"><b>🔍 Compacted earlier conversation</b></summary>'
         f'<div>{_md(content)}</div></details>'
     )
     return _div(inner, BACKGROUND_LIGHT)
