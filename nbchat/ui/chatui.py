@@ -528,6 +528,7 @@ class ChatUI(ContextMixin, ConversationMixin):
         self.session_dropdown.options = options
         self.session_dropdown.value = self.session_id
         self._render_history()
+        self._refresh_monitoring_panel()
 
     def _on_session_change(self, change):
         if change["new"]:
