@@ -158,5 +158,5 @@ def make_widget(html_str: str) -> widgets.HTML:
     """
     return widgets.HTML(
         value=html_str,
-        layout=widgets.Layout(width="100%", margin="0"),
+        layout=widgets.Layout(width="100%", margin="0", background_color="#1a1a1a"),
     )

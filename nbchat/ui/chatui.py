@@ -80,6 +80,7 @@ class ChatUI(ContextMixin, ConversationMixin):
         self._load_history()
         display(self.layout)
         self._inject_scroll_preservation()
+        self._inject_dark_theme_css()
 
     # ------------------------------------------------------------------
     # Output hook overrides (ConversationMixin interface)
@@ -174,6 +175,32 @@ class ChatUI(ContextMixin, ConversationMixin):
         })();
         """
         ipy_display(Javascript(js))
+
+
+    # ------------------------------------------------------------------
+    # Dark theme CSS injection
+    # ------------------------------------------------------------------
+    def _inject_dark_theme_css(self) -> None:
+        """Inject CSS to apply dark theme background colors to widget containers."""
+        from IPython.display import HTML, display as ipy_display
+        css = """
+        <style>
+        /* Set background color for the main chat container */
+        .nbchat-history, .jp-OutputArea-output {
+            background-color: #1a1a1a !important;
+        }
+        /* Set background color for text areas */
+        .nbchat-history textarea, .jp-OutputArea-output textarea {
+            background-color: #2d2d2d !important;
+            color: #e0e0e0 !important;
+        }
+        /* Set background color for HTML widgets */
+        .nbchat-history .jp-RenderedHTML, .jp-OutputArea-output .jp-RenderedHTML {
+            background-color: #1a1a1a !important;
+        }
+        </style>
+        """
+        ipy_display(HTML(css))
 
     # ------------------------------------------------------------------
     # Session state reset
