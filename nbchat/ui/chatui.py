@@ -192,6 +192,11 @@ class ChatUI(ContextMixin, ConversationMixin):
         /* Set background color for the sidebar */
         .nbchat-sidebar {
             background-color: #1a1a1a !important;
+            color: #e0e0e0 !important;
+        }
+        /* Set text color for sidebar children */
+        .nbchat-sidebar * {
+            color: #e0e0e0 !important;
         }
         /* Set background color for sidebar children */
         .nbchat-sidebar * {
@@ -199,6 +204,11 @@ class ChatUI(ContextMixin, ConversationMixin):
         }
         /* Set background color for text areas */
         .nbchat-history textarea, .jp-OutputArea-output textarea {
+            background-color: #2d2d2d !important;
+            color: #e0e0e0 !important;
+        }
+        /* Set background color for user input box */
+        .nbchat-input-box textarea {
             background-color: #2d2d2d !important;
             color: #e0e0e0 !important;
         }
@@ -296,7 +306,7 @@ class ChatUI(ContextMixin, ConversationMixin):
             placeholder="...",
             layout=widgets.Layout(width="90%", min_height="50px", height="auto", background_color="#2d2d2d", color="#e0e0e0"),
             rows=2,
-        )
+        ), _dom_classes=["nbchat-input-box"])
         send_btn = widgets.Button(
             description="Send", button_style="success",
             layout=widgets.Layout(width="5%", padding="0", margin="0"),
