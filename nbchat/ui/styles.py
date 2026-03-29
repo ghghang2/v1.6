@@ -35,10 +35,11 @@ MARGIN = "0"
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _style(bg: str) -> str:
+def _style(bg: str, text_color: str = TEXT_COLOR) -> str:
     return (
         f"background-color:{bg}; padding:{PADDING}; "
-        f"border-radius:{BORDER_RADIUS}; margin:{MARGIN};"
+        f"border-radius:{BORDER_RADIUS}; margin:{MARGIN}; "
+        f"color:{text_color};"
     )
 
 def _div(content: str, bg: str) -> str:
