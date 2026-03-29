@@ -304,7 +304,7 @@ class ChatUI(ContextMixin, ConversationMixin):
         ), _dom_classes=["nbchat-history"])
         self.input_text = widgets.Textarea(
             placeholder="...",
-            layout=widgets.Layout(width="90%", min_height="50px", height="auto", background_color="#2d2d2d", color="#e0e0e0"),
+            layout=widgets.Layout(width="90%", min_height="50px", height="auto", background_color="#2d2d2d", color="#e0e0e0",
             rows=2,
         ), _dom_classes=["nbchat-input-box"])
         send_btn = widgets.Button(
