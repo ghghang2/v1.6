@@ -211,17 +211,17 @@ class ChatUI(ContextMixin, ConversationMixin):
 
         self.metrics_output = widgets.HTML(
             value="<i>Loading server status...</i>",
-            layout=widgets.Layout(width="100%", border="1px solid gray", padding="10px"),
+            layout=widgets.Layout(width="100%", border="1px solid #444", background_color="#1a1a1a", padding="10px"),
         )
         self.tools_output = widgets.HTML(
             layout=widgets.Layout(
-                width="100%", border="1px solid lightgray", padding="2px"
+                width="100%", border="1px solid #444", background_color="#1a1a1a", padding="2px"
             )
         )
         self.monitoring_output = widgets.HTML(
             value="<i>No monitoring data yet.</i>",
             layout=widgets.Layout(
-                width="100%", border="1px solid lightgray", padding="4px"
+                width="100%", border="1px solid #444", background_color="#1a1a1a", padding="4px"
             ),
         )
         self._refresh_tools_list()
@@ -251,15 +251,15 @@ class ChatUI(ContextMixin, ConversationMixin):
             self.monitoring_output,
             widgets.HTML("<hr>"),
             self.session_dropdown,
-        ], layout=widgets.Layout(width="15%", border="1px solid lightgray"))
+        ], layout=widgets.Layout(width="15%", border="1px solid #444", background_color="#1a1a1a"))
 
         self.chat_history = widgets.VBox([], layout=widgets.Layout(
             width="100%", height="100%", max_height="800px", overflow_y="auto",
-            border="1px solid #ccc",
+            border="1px solid #444", background_color="#1a1a1a",
         ), _dom_classes=["nbchat-history"])
         self.input_text = widgets.Textarea(
             placeholder="...",
-            layout=widgets.Layout(width="90%", min_height="50px", height="auto"),
+            layout=widgets.Layout(width="90%", min_height="50px", height="auto", background_color="#2d2d2d", color="#e0e0e0"),
             rows=2,
         )
         send_btn = widgets.Button(
