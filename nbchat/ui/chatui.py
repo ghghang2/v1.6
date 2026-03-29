@@ -189,6 +189,14 @@ class ChatUI(ContextMixin, ConversationMixin):
         .nbchat-history, .jp-OutputArea-output {
             background-color: #1a1a1a !important;
         }
+        /* Set background color for the sidebar */
+        .nbchat-sidebar {
+            background-color: #1a1a1a !important;
+        }
+        /* Set background color for sidebar children */
+        .nbchat-sidebar * {
+            background-color: #1a1a1a !important;
+        }
         /* Set background color for text areas */
         .nbchat-history textarea, .jp-OutputArea-output textarea {
             background-color: #2d2d2d !important;
@@ -278,7 +286,7 @@ class ChatUI(ContextMixin, ConversationMixin):
             self.monitoring_output,
             widgets.HTML("<hr>"),
             self.session_dropdown,
-        ], layout=widgets.Layout(width="15%", border="1px solid #444", background_color="#1a1a1a"))
+        ], layout=widgets.Layout(width="15%", border="1px solid #444", background_color="#1a1a1a"), _dom_classes=["nbchat-sidebar"])
 
         self.chat_history = widgets.VBox([], layout=widgets.Layout(
             width="100%", height="100%", max_height="800px", overflow_y="auto",
