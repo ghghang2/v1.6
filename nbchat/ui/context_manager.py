@@ -586,7 +586,7 @@ class ContextMixin:
             tc_text = "".join(
                 tc.get("function", {}).get("arguments", "") for tc in tcs
             )
-            return max(1, (len(content) + len(tc_text)) // 1.5)
+            return max(1, (len(content) + len(tc_text)) // 1.1)
 
         def total() -> int:
             return sum(est(m) for m in messages)
