@@ -111,6 +111,7 @@ class ConversationMixin:
         from nbchat.ui import chat_builder
         from nbchat.core import compressor as comp
         from nbchat.core import client as _client_mod
+        from nbchat.core import monitoring as mon
         db = lazy_import("nbchat.core.db")
 
         real_client = _client_mod.get_client()
@@ -124,6 +125,7 @@ class ConversationMixin:
                 f"{type(exc).__name__}: {exc}"
             )
             _log.debug(msg, exc_info=True)
+            mon.flush_session_monitor(self.session_id, db)
             self._on_agent_message(msg)
 
     def _run_conversation_loop(
@@ -157,6 +159,7 @@ class ConversationMixin:
 
         for turn in range(self.MAX_TOOL_TURNS + 1):
             if self._stop_streaming:
+                mon.flush_session_monitor(self.session_id, db)
                 break
 
             volatile_len = (
@@ -182,6 +185,7 @@ class ConversationMixin:
                 if content:
                     self.history.append(("assistant", content, "", "", "", 0))
                     db.log_message(self.session_id, "assistant", content)
+                mon.flush_session_monitor(self.session_id, db)
                 self._refresh_monitoring_panel()
                 break
 
@@ -190,6 +194,7 @@ class ConversationMixin:
                 self._on_agent_message(warning)
                 self.history.append(("assistant", warning, "", "", "", 0))
                 db.log_message(self.session_id, "assistant", warning)
+                mon.flush_session_monitor(self.session_id, db)
                 break
 
             # ── Stall detection ───────────────────────────────────────────
