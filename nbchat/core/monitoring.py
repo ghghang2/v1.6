@@ -683,7 +683,7 @@ def flush_session_monitor(session_id: str, db) -> None:
     db: the nbchat.core.db module (passed to avoid circular imports)
     """
     with _monitors_lock:
-        monitor = _monitors.pop(session_id, None)
+        monitor = _monitors.get(session_id)
     if monitor is None:
         return
     try:
