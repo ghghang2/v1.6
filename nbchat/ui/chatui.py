@@ -20,13 +20,14 @@ from __future__ import annotations
 
 import ipywidgets as widgets
 import json
+import logging
 import re
 import threading
 import time
 import uuid
 from pathlib import Path
 from typing import List, Tuple
-import logging
+
 from IPython.display import display
 
 from nbchat.ui import chat_renderer as renderer
@@ -35,7 +36,9 @@ from nbchat.ui.context_manager import ContextMixin
 from nbchat.ui.conversation import ConversationMixin
 from nbchat.ui.utils import changed_files
 from nbchat.core.utils import lazy_import
-_log = logging.getLogger("nbchat.compaction")
+
+_log = logging.getLogger("nbchat.chatui")
+
 
 class ChatUI(ContextMixin, ConversationMixin):
     """Chat interface with streaming, reasoning, and tool execution."""
@@ -59,12 +62,17 @@ class ChatUI(ContextMixin, ConversationMixin):
         self.task_log: List[str] = []
         self._turn_summary_cache: dict = {}
 
-        self._stop_streaming = False
+        # threading.Event replaces the plain bool so set/clear/is_set are
+        # individually atomic and safe across the UI and background threads.
+        self._stop_event = threading.Event()
         self._stream_thread = None
         # True while executor.run_tool() is in flight — used by the metrics
         # updater to keep proc green during tool execution when the LLM server
         # is idle between calls.
         self._tool_running = False
+        # Guards all reads and writes to self.history so the background
+        # conversation thread and UI-thread callbacks never race.
+        self._history_lock = threading.Lock()
 
         # Live streaming widget references — reset to None before each turn.
         # _on_stream_token and _on_stream_reasoning create these on first chunk.
@@ -232,7 +240,8 @@ class ChatUI(ContextMixin, ConversationMixin):
             mon.flush_session_monitor(self.session_id, db)
         except Exception:
             pass
-        self.history = []
+        with self._history_lock:
+            self.history = []
         self.task_log = []
         self._turn_summary_cache = {}
         try:
@@ -316,7 +325,7 @@ class ChatUI(ContextMixin, ConversationMixin):
             layout=widgets.Layout(width="5%", padding="0", margin="0"),
         )
         send_btn.on_click(self._on_send)
-        stop_btn.on_click(lambda *_: setattr(self, "_stop_streaming", True))
+        stop_btn.on_click(lambda *_: self._stop_event.set())
 
         main = widgets.VBox([
             widgets.HTML(""),
@@ -415,7 +424,8 @@ class ChatUI(ContextMixin, ConversationMixin):
 
     def _load_history(self):
         db = lazy_import("nbchat.core.db")
-        self.history = list(db.load_history(self.session_id))
+        with self._history_lock:
+            self.history = list(db.load_history(self.session_id))
         self.task_log = db.load_task_log(self.session_id)
         self._turn_summary_cache = db.load_turn_summaries(self.session_id)
         self._render_history()
@@ -437,15 +447,16 @@ class ChatUI(ContextMixin, ConversationMixin):
                 raw = db.load_global_monitoring_stats()
                 if raw:
                     global_report = mon.get_global_report(raw)
-            except Exception as excs:
-                _log.debug(f"load_global_monitoring_stats error: {exc}")
+            except Exception:
+                pass
 
             self.monitoring_output.value = mon.format_monitoring_html(
                 session_report, global_report, code_color=CODE_COLOR
             )
         except Exception as exc:
-            _log.debug(f"_refresh_monitoring_panel error: {exc}")
-            self.monitoring_output.value = f"<i style='color:orange;'>Monitoring error: {exc}</i>"
+            self.monitoring_output.value = (
+                f"<i style='color:orange;'>Monitoring error: {exc}</i>"
+            )
 
     def _render_history(self):
         """Render the windowed slice of history into the chat panel."""
@@ -475,8 +486,9 @@ class ChatUI(ContextMixin, ConversationMixin):
                         msg.get("content", ""),
                         msg.get("tool_calls", []),
                     ))
-                except Exception:
-                    children.append(renderer.render_assistant(content))
+                except Exception as exc:
+                    _log.debug(f"_render_history: failed to parse assistant_full row: {exc!r} | tool_args={tool_args!r}")
+                    children.append(renderer.render_assistant(tool_args or content))
             elif role == "tool":
                 children.append(
                     renderer.render_tool(content, tool_name, str(tool_args))
@@ -500,7 +512,7 @@ class ChatUI(ContextMixin, ConversationMixin):
 
     def _append(self, widget: widgets.HTML):
         """Append a widget to the chat panel without pruning (scroll-safe)."""
-        self.chat_history.children = list(self.chat_history.children) + [widget]
+        self.chat_history.children = (*self.chat_history.children, widget)
 
     def _prune_widgets(self) -> None:
         """Prune oldest widgets if the panel exceeds MAX_VISIBLE_WIDGETS."""
@@ -547,16 +559,17 @@ class ChatUI(ContextMixin, ConversationMixin):
         db = lazy_import("nbchat.core.db")
 
         if self._stream_thread and self._stream_thread.is_alive():
-            self._stop_streaming = True
+            self._stop_event.set()
             self._stream_thread.join()
 
         self._prune_widgets()
-        self.history.append(("user", user_input, "", "", "", 0))
+        with self._history_lock:
+            self.history.append(("user", user_input, "", "", "", 0))
         self._append(renderer.render_user(user_input))
         db.log_message(self.session_id, "user", user_input)
 
         self.input_text.value = ""
-        self._stop_streaming = False
+        self._stop_event.clear()
         self._stream_thread = threading.Thread(
             target=self._process_conversation_turn,
             daemon=True,

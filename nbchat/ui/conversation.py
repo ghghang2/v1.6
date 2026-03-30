@@ -48,13 +48,27 @@ def _is_error_content(content: str) -> bool:
     ))
 
 
+def _normalise_args(args_str: str) -> str:
+    """Return a canonical JSON string for stall-detection comparison.
+
+    Sorts keys so that argument dicts with identical content but different
+    key ordering compare equal, preventing the stall detector from missing
+    repeated calls when the model varies key order across turns.
+    """
+    try:
+        return json.dumps(json.loads(args_str), sort_keys=True)
+    except Exception:
+        return args_str
+
+
 class ConversationMixin:
     """Mixed into ChatUI and headless channel agents.
 
     Required attributes on the host class:
         self.history, self.task_log, self.system_prompt, self.model_name,
-        self.session_id, self._stop_streaming, self._tool_running,
-        self._hard_trim, self._log_action, self._window, self.MAX_TOOL_TURNS
+        self.session_id, self._stop_event, self._tool_running,
+        self._history_lock, self._hard_trim, self._log_action,
+        self._window, self.MAX_TOOL_TURNS
     """
 
     # ── Output hooks — override in subclasses for UI or channel output ────
@@ -158,7 +172,7 @@ class ConversationMixin:
         _recent_call_sets: list = []
 
         for turn in range(self.MAX_TOOL_TURNS + 1):
-            if self._stop_streaming:
+            if self._stop_event.is_set():
                 mon.flush_session_monitor(self.session_id, db)
                 break
 
@@ -178,12 +192,14 @@ class ConversationMixin:
                 pass
 
             if reasoning:
-                self.history.append(("analysis", reasoning, "", "", "", 0))
+                with self._history_lock:
+                    self.history.append(("analysis", reasoning, "", "", "", 0))
                 db.log_message(self.session_id, "analysis", reasoning)
 
             if not tool_calls or finish_reason != "tool_calls":
                 if content:
-                    self.history.append(("assistant", content, "", "", "", 0))
+                    with self._history_lock:
+                        self.history.append(("assistant", content, "", "", "", 0))
                     db.log_message(self.session_id, "assistant", content)
                 mon.flush_session_monitor(self.session_id, db)
                 self._refresh_monitoring_panel()
@@ -192,14 +208,15 @@ class ConversationMixin:
             if turn == self.MAX_TOOL_TURNS:
                 warning = f"Maximum tool turns ({self.MAX_TOOL_TURNS}) reached."
                 self._on_agent_message(warning)
-                self.history.append(("assistant", warning, "", "", "", 0))
+                with self._history_lock:
+                    self.history.append(("assistant", warning, "", "", "", 0))
                 db.log_message(self.session_id, "assistant", warning)
                 mon.flush_session_monitor(self.session_id, db)
                 break
 
             # ── Stall detection ───────────────────────────────────────────
             turn_calls = frozenset(
-                (tc["function"]["name"], tc["function"]["arguments"])
+                (tc["function"]["name"], _normalise_args(tc["function"]["arguments"]))
                 for tc in tool_calls
             )
             _recent_call_sets.append(turn_calls)
@@ -218,7 +235,8 @@ class ConversationMixin:
                     "not yet attempted."
                 )
                 _log.debug("stall detected — injecting interrupt")
-                self.history.append(("user", stall_msg, "", "", "", 0))
+                with self._history_lock:
+                    self.history.append(("user", stall_msg, "", "", "", 0))
                 db.log_message(self.session_id, "user", stall_msg)
                 messages.append({"role": "user", "content": stall_msg})
                 _recent_call_sets.clear()
@@ -236,9 +254,10 @@ class ConversationMixin:
                 "content": content or None,
                 "tool_calls": tool_calls,
             })
-            self.history.append(
-                ("assistant_full", "", "full", "full", full_msg_json, 0)
-            )
+            with self._history_lock:
+                self.history.append(
+                    ("assistant_full", "", "full", "full", full_msg_json, 0)
+                )
             db.log_row(
                 self.session_id, "assistant_full", "", "full", "full", full_msg_json
             )
@@ -273,9 +292,10 @@ class ConversationMixin:
                 self._log_action(tool_name, tool_args, model_result)
 
                 error_flag = 1 if _is_error_content(raw_result) else 0
-                self.history.append(
-                    ("tool", raw_result, tc["id"], tool_name, tool_args, error_flag)
-                )
+                with self._history_lock:
+                    self.history.append(
+                        ("tool", raw_result, tc["id"], tool_name, tool_args, error_flag)
+                    )
                 db.log_tool_msg(
                     self.session_id, tc["id"], tool_name, tool_args, raw_result
                 )
@@ -351,7 +371,7 @@ class ConversationMixin:
                 stream=True, tools=tools, max_tokens=config.MAX_TOOL_OUTPUT_CHARS,
             )
             for chunk in stream:
-                if self._stop_streaming:
+                if self._stop_event.is_set():
                     stream.close()
                     break
                 choice = chunk.choices[0]
