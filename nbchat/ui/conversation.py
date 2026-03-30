@@ -310,7 +310,7 @@ class ConversationMixin:
                     )
                     monitor.record_tool_call(
                         tool_name=tool_name,
-                        was_compressed=len(compressed) < len(raw_result),
+                        was_compressed=(compressed != raw_result),
                         had_error=bool(error_flag),
                         strategy=last_strategy,
                         input_chars=len(raw_result),

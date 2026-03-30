@@ -19,7 +19,7 @@ def lazy_import(module_name: str):
 
     The function mirrors the behaviour of the legacy ``lazy_import``.
     """
-    global _client, _tools, _db_module, _config_module, _compressor_module, _whatsapp_agent_module
+    global _client, _tools, _db_module, _config_module, _compressor_module, _whatsapp_agent_module, _monitoring_module
 
     if module_name == "nbchat.core.client":
         if _client is None:

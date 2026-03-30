@@ -26,7 +26,7 @@ import time
 import uuid
 from pathlib import Path
 from typing import List, Tuple
-
+import logging
 from IPython.display import display
 
 from nbchat.ui import chat_renderer as renderer
@@ -35,7 +35,7 @@ from nbchat.ui.context_manager import ContextMixin
 from nbchat.ui.conversation import ConversationMixin
 from nbchat.ui.utils import changed_files
 from nbchat.core.utils import lazy_import
-
+_log = logging.getLogger("nbchat.compaction")
 
 class ChatUI(ContextMixin, ConversationMixin):
     """Chat interface with streaming, reasoning, and tool execution."""
@@ -437,14 +437,15 @@ class ChatUI(ContextMixin, ConversationMixin):
                 raw = db.load_global_monitoring_stats()
                 if raw:
                     global_report = mon.get_global_report(raw)
-            except Exception:
-                pass
+            except Exception as excs:
+                _log.debug(f"load_global_monitoring_stats error: {exc}")
 
             self.monitoring_output.value = mon.format_monitoring_html(
                 session_report, global_report, code_color=CODE_COLOR
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            _log.debug(f"_refresh_monitoring_panel error: {exc}")
+            self.monitoring_output.value = f"<i style='color:orange;'>Monitoring error: {exc}</i>"
 
     def _render_history(self):
         """Render the windowed slice of history into the chat panel."""
