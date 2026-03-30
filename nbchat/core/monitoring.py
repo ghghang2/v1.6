@@ -677,6 +677,7 @@ def flush_session_monitor(session_id: str, db) -> None:
     """Merge session monitor data into global stats and persist.
 
     Call this at the end of a session or when switching sessions.
+    After flushing, the session monitor is removed from memory to prevent stale data.
 
     Parameters
     ----------
@@ -695,6 +696,8 @@ def flush_session_monitor(session_id: str, db) -> None:
             f"flush_session_monitor: merged session {session_id} into global stats "
             f"({merged['sessions_seen']} sessions total)"
         )
+        # Remove the session monitor from memory after flushing
+        _monitors.pop(session_id, None)
     except Exception as exc:
         _log.debug(f"flush_session_monitor failed: {exc}")
 
