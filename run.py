@@ -25,7 +25,8 @@ from nbchat.core import config
 # --------------------------------------------------------------------------- #
 SERVICE_INFO = Path(config.SERVICE_INFO_PATH)
 LLAMA_LOG    = Path(config.LLAMA_LOG_PATH)
-RELEASE_REPO = f"{config.USER_NAME}/llamacpp_t4_v2"
+RELEASE_REPO = f"{config.USER_NAME}/llamacpp_g4"
+# RELEASE_REPO = f"{config.USER_NAME}/llamacpp_t4_v2"
 MODEL        = config.MODEL_NAME
 PORT         = config.PORT
 N_PARALLEL   = config.N_PARALLEL
@@ -140,25 +141,48 @@ def main() -> None:
     pids = {}
 
     # 2. Start llama-server
+
     llama_cmd = [
         "./llama-server",
         "-hf", MODEL,
         "--port", str(PORT),
-        "--parallel", str(N_PARALLEL),
-        "--ctx-size", str(CTX_SIZE),
-        "--n-gpu-layers", str(N_GPU_LAYERS),
+        "--parallel", "1",
+        "--ctx-size", "65536",
+        "--n-gpu-layers", "999",
         "--flash-attn", "1",
-        # "--temp", "1.0", # 9B reasoning
-        "--temp", "0.6", # 27B thinking
+        "--batch-size", "2048",
+        "--ubatch-size", "512",
+        # "--cache-type-k", "q8_0",
+        # "--cache-type-v", "q8_0",
+        "--temp", "0.6",
         "--top-p", "0.95",
         "--top-k", "20",
+        "--min-p", "0.0",
+        "--repeat-penalty", "1.0",
         "--chat-template-kwargs", '{"enable_thinking": true}',
-        "--batch-size", "512",
-        "--ubatch-size", "512",
-        "--no-mmap",
+        "--mmap",
         "--mlock",
         "--metrics",
     ]
+    # llama_cmd = [
+    #     "./llama-server",
+    #     "-hf", MODEL,
+    #     "--port", str(PORT),
+    #     "--parallel", str(N_PARALLEL),
+    #     "--ctx-size", str(CTX_SIZE),
+    #     "--n-gpu-layers", str(N_GPU_LAYERS),
+    #     "--flash-attn", "1",
+    #     # "--temp", "1.0", # 9B reasoning
+    #     "--temp", "0.6", # 27B thinking
+    #     "--top-p", "0.95",
+    #     "--top-k", "20",
+    #     "--chat-template-kwargs", '{"enable_thinking": true}',
+    #     "--batch-size", "512",
+    #     "--ubatch-size", "512",
+    #     "--no-mmap",
+    #     "--mlock",
+    #     "--metrics",
+    # ]
     pids["llama"] = _run_detached(llama_cmd, LLAMA_LOG, "llama-server")
 
     # 3. Start WhatsApp Python Server
