@@ -1,7 +1,7 @@
 """app.tools.get_weather
 =========================
 
-This module implements a very small weather lookup tool that can be
+This module implements a weather lookup tool that can be
 invoked by the OpenAI function-calling interface.  The tool uses the
 `OpenMeteo <https://open-meteo.com/>`_ API, which is free, open source
 and does not require an API key.  Two endpoints are used:
@@ -24,11 +24,14 @@ Example usage:
 >>> import json
 >>> from app.tools.get_weather import func as get_weather
 >>> json.loads(get_weather("London", "2024-12-01"))
-{'result': {'city': 'London', 'date': '2024-12-01', 'current': {'temperature': 6.2, 'windspeed': 5.5, 'winddirection': 210}, 'forecast': {'temperature_2m_max': 12.5, 'temperature_2m_min': 3.8, 'precipitation_sum': 0.0}}
+{'result': {'city': 'London', 'date': '2024-12-01', 'current': {'temperature': 6.2, 'windspeed': 5.5, 'winddirection': 210}, 'forecast': {'temperature_2m_max': 12.5, 'temperature_2m_min': 3.8, 'precipitation_sum': 0.0}}}
 
-The function accepts ``city`` as a free-form string and ``date`` as an
-ISO 8601 date (e.g. ``YYYY-MM-DD``).  If ``date`` is omitted or empty
-the current date is used.
+The function accepts ``city`` as a free-form string and ``date`` as either:
+
+- An ISO 8601 date (e.g. ``2024-12-01``)
+- A relative date string like ``today``, ``tomorrow``, ``yesterday``, ``next week``
+
+If ``date`` is omitted or empty, today's date is used.
 """
 
 from __future__ import annotations
@@ -36,8 +39,9 @@ from __future__ import annotations
 import json
 import urllib.request
 import urllib.parse
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Tuple
+
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -49,6 +53,11 @@ def _geocode_city(city: str) -> Tuple[float, float]:
     The function queries the OpenMeteo geocoding API and returns the
     first result.  It raises a :class:`ValueError` if the city cannot be
     found.
+
+    Raises
+    ------
+    ValueError
+        If the city name cannot be resolved.
     """
     url = f"https://geocoding-api.open-meteo.com/v1/search?name={urllib.parse.quote(city)}"
     with urllib.request.urlopen(url) as response:
@@ -56,6 +65,54 @@ def _geocode_city(city: str) -> Tuple[float, float]:
     if "results" not in data or not data["results"]:
         raise ValueError(f"City '{city}' not found")
     return data["results"][0]["latitude"], data["results"][0]["longitude"]
+
+
+def _parse_date(date_str: str) -> str:
+    """Parse a date string and return an ISO 8601 formatted date.
+
+    Handles both explicit ISO dates and common relative date strings.
+
+    Parameters
+    ----------
+    date_str: str
+        Date string in ISO format (YYYY-MM-DD) or relative form like
+        ``today``, ``tomorrow``, ``yesterday``, ``next week``, etc.
+
+    Returns
+    -------
+    str
+        ISO 8601 formatted date string (YYYY-MM-DD).
+
+    Raises
+    ------
+    ValueError
+        If the date string cannot be parsed.
+    """
+    today = datetime.now().date()
+    date_str_lower = date_str.lower().strip()
+
+    # Handle relative date strings
+    if date_str_lower == "today":
+        return today.strftime("%Y-%m-%d")
+    elif date_str_lower == "tomorrow":
+        return (today + timedelta(days=1)).strftime("%Y-%m-%d")
+    elif date_str_lower == "yesterday":
+        return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    elif date_str_lower == "next week":
+        return (today + timedelta(days=7)).strftime("%Y-%m-%d")
+    elif date_str_lower == "last week":
+        return (today - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    # Try to parse as ISO format
+    try:
+        parsed = datetime.strptime(date_str, "%Y-%m-%d").date()
+        return parsed.strftime("%Y-%m-%d")
+    except ValueError:
+        raise ValueError(
+            f"Invalid date format: '{date_str}'. "
+            "Please use ISO format (YYYY-MM-DD) or relative terms like "
+            "'today', 'tomorrow', 'yesterday', 'next week'."
+        )
 
 
 def _fetch_weather(lat: float, lon: float, date: str) -> Dict:
@@ -66,8 +123,7 @@ def _fetch_weather(lat: float, lon: float, date: str) -> Dict:
     lat, lon: float
         Latitude and longitude of the location.
     date: str
-        ISO 8601 formatted date string (YYYY-MM-DD).  The API expects a
-        single day, so ``start_date`` and ``end_date`` are identical.
+        ISO 8601 formatted date string (YYYY-MM-DD).
     """
     params = {
         "latitude": str(lat),
@@ -83,6 +139,7 @@ def _fetch_weather(lat: float, lon: float, date: str) -> Dict:
     with urllib.request.urlopen(url) as response:
         return json.loads(response.read().decode("utf-8"))
 
+
 # ---------------------------------------------------------------------------
 # The actual tool implementation
 # ---------------------------------------------------------------------------
@@ -95,12 +152,13 @@ def _get_weather(city: str, date: str = "") -> str:
     city: str
         The name of the city to look up.
     date: str, optional
-        The date for which to retrieve forecast data (ISO format YYYY-MM-DD).
+        The date for which to retrieve forecast data. Accepts:
+        - ISO format (YYYY-MM-DD)
+        - Relative strings: ``today``, ``tomorrow``, ``yesterday``, ``next week``
         If omitted or empty, today's date is used.
     """
     try:
-        if not date:
-            date = datetime.utcnow().strftime("%Y-%m-%d")
+        date = _parse_date(date) if date else datetime.now().strftime("%Y-%m-%d")
         lat, lon = _geocode_city(city)
         data = _fetch_weather(lat, lon, date)
         current = data.get("current_weather", {})
@@ -114,6 +172,7 @@ def _get_weather(city: str, date: str = "") -> str:
         return json.dumps({"result": result})
     except Exception as exc:
         return json.dumps({"error": str(exc)})
+
 
 # ---------------------------------------------------------------------------
 # Public attributes for auto-discovery
