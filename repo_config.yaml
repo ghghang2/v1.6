@@ -15,14 +15,14 @@ DEFAULT_SYSTEM_PROMPT: |
 
 user_name: "ghghang2"
 repo_name: "v1.6"
-context_len: 32768
-tail_len: 2
-max_tool_output_chars: 16384
-max_history_turns: 8
+context_len: 65536
+tail_len: 10
+max_tool_output_chars: 32768
+max_history_turns: 20
 
 port: 8000
 n_parallel: 1
-ctx_size: 32768
+ctx_size: 65536
 n_gpu_layers: 999
 service_info_path: "service_info.json"
 llama_log_path: "llama_server.log"

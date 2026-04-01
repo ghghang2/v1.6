@@ -159,7 +159,7 @@ def main() -> None:
         "--top-k", "20",
         "--min-p", "0.0",
         "--repeat-penalty", "1.0",
-        "--chat-template-kwargs", '{"enable_thinking": true}',
+        "--chat-template-kwargs", '{"enable_thinking": false}',
         "--mmap",
         "--mlock",
         "--metrics",
