@@ -77,6 +77,7 @@ SUMMARIZER_TOOL_CHARS: int = int(_cfg["summarizer_tool_chars"])
 LOSSLESS_WINDOW: int = int(_cfg["lossless_window"])
 
 # Context management parameters
+CONTEXT_BUDGET: int = CTX_SIZE//N_PARALLEL
 CONTEXT_HEADROOM: float = float(_cfg["context_headroom_ratio"]) 
 PREFIX_TOKEN_RESERVE: int = int(_cfg["prefix_token_reserve"])
 PERSIST_FRACTION: float = float(_cfg["persist_fraction"]) 

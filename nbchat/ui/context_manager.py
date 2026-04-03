@@ -4,7 +4,7 @@ Five mechanisms keep messages within the model's context limit and preserve
 awareness across ultra-long agentic loops:
 
   1. Token-budget sliding window — walk backward through history accumulating
-                           token estimates until CTX_SIZE * headroom is
+                           token estimates until CONTEXT_BUDGET * headroom is
                            reached.  No row or turn caps: the budget alone
                            governs what fits.
   2. L1 Core Memory      — typed persistent slots (goal, constraints, active
@@ -34,7 +34,7 @@ Eliminated manual knobs (now derived):
   L2_WRITE_THRESHOLD, L2_MIN_IMPORTANCE_FOR_RETRIEVAL.
 
 Retained knobs (have clear semantic meaning):
-  CTX_SIZE, CONTEXT_HEADROOM, PERSIST_FRACTION, L2_RETRIEVAL_LIMIT,
+  CONTEXT_BUDGET, CONTEXT_HEADROOM, PERSIST_FRACTION, L2_RETRIEVAL_LIMIT,
   SUMMARIZER_TOOL_CHARS, CORE_MEMORY_* limits.
 
 Row shape (canonical 6-tuple, used throughout):
@@ -535,7 +535,7 @@ class ContextMixin:
           3. Structured prior context summaries (if turns slid off)
         """
         budget = (
-            int(config.CTX_SIZE * getattr(config, "CONTEXT_HEADROOM", 0.82))
+            int(config.CONTEXT_BUDGET * getattr(config, "CONTEXT_HEADROOM", 0.82))
             - _PREFIX_TOKEN_RESERVE
         )
 
@@ -765,7 +765,7 @@ class ContextMixin:
         Exchange scan starts at index 2.
         """
         limit = int(
-            config.CTX_SIZE
+            config.CONTEXT_BUDGET
             * getattr(config, "CONTEXT_HEADROOM", 0.82)
             * 0.85   # additional safety margin inside hard trim
         )

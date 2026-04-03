@@ -377,7 +377,7 @@ class ChatUI(ContextMixin, ConversationMixin):
                             parts = line.split()
                             if len(parts) >= 2:
                                 try:
-                                    server_processing = float(parts[1]) == 1.0
+                                    server_processing = float(parts[1]) > 0.0
                                 except ValueError:
                                     pass
                         m = re.search(r"prompt_tokens_seconds\s+([\d.]+)", line)
