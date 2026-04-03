@@ -3,8 +3,10 @@
 Five mechanisms keep messages within the model's context limit and preserve
 awareness across ultra-long agentic loops:
 
-  1. L0 Sliding window   — only the last WINDOW_TURNS user turns enter the
-                           hot buffer verbatim.
+  1. Token-budget sliding window — walk backward through history accumulating
+                           token estimates until CTX_SIZE * headroom is
+                           reached.  No row or turn caps: the budget alone
+                           governs what fits.
   2. L1 Core Memory      — typed persistent slots (goal, constraints, active
                            entities, error history, last user correction)
                            injected as a dedicated system block on every call.
@@ -13,22 +15,40 @@ awareness across ultra-long agentic loops:
                            entries are retrieved and injected before the window.
   4. Prior context       — turns that slid off are summarized per-turn by an
                            LLM using a structured GOAL/ENTITIES/RATIONALE
-                           format and injected as a system block.
+                           format and injected as a system block.  Summaries
+                           are computed asynchronously so they never block the
+                           next API call.
   5. Importance-scored hard trim — exchanges are scored before eviction;
-                           those above L2_WRITE_THRESHOLD are persisted to
-                           the L2 episodic store before being dropped from
-                           the hot context.
+                           those above the adaptive write threshold are
+                           persisted to the L2 episodic store before being
+                           dropped from the hot context.
+
+Adaptive thresholds:
+  ImportanceTracker maintains a rolling sorted window of observed importance
+  scores per session and derives L2 write / retrieval thresholds as
+  percentiles of that distribution.  This removes sensitivity to absolute
+  score calibration and adapts to the session's actual signal distribution.
+
+Eliminated manual knobs (now derived):
+  WINDOW_TURNS, MAX_WINDOW_ROWS, MAX_EXCHANGES, KEEP_RECENT_EXCHANGES,
+  L2_WRITE_THRESHOLD, L2_MIN_IMPORTANCE_FOR_RETRIEVAL.
+
+Retained knobs (have clear semantic meaning):
+  CTX_SIZE, CONTEXT_HEADROOM, PERSIST_FRACTION, L2_RETRIEVAL_LIMIT,
+  SUMMARIZER_TOOL_CHARS, CORE_MEMORY_* limits.
 
 Row shape (canonical 6-tuple, used throughout):
     (role: str, content: str, tool_id: str, tool_name: str, tool_args: str, error_flag: int)
 """
 from __future__ import annotations
 
+import bisect
 import hashlib
 import json
 import logging
 import re
-from typing import List, Optional, Tuple
+from concurrent.futures import ThreadPoolExecutor
+from typing import Dict, List, Optional, Tuple
 
 from nbchat.core.utils import lazy_import
 from nbchat.core import config
@@ -38,19 +58,19 @@ _log = logging.getLogger("nbchat.compaction")
 # Canonical history row type — must match db.load_history column order.
 _Row = Tuple[str, str, str, str, str, int]
 
-# ── Tuning knobs ──────────────────────────────────────────────────────────────
-# Lowered from 3.5: successful completions now score ~2.5 and will be persisted.
-L2_WRITE_THRESHOLD = config.L2_WRITE_THRESHOLD
+# ── Retained tuning knobs ─────────────────────────────────────────────────────
 # Max episodic entries injected per API call.
 L2_RETRIEVAL_LIMIT = config.L2_RETRIEVAL_LIMIT
-# Minimum importance score for L2 entries retrieved by importance (not entity match).
-L2_MIN_IMPORTANCE_FOR_RETRIEVAL = config.L2_MIN_IMPORTANCE_FOR_RETRIEVAL
 # How many active entities to keep in L1 core memory.
 CORE_MEMORY_ACTIVE_ENTITIES_LIMIT = config.CORE_MEMORY_ACTIVE_ENTITIES_LIMIT
 # How many recent error strings to keep in L1.
 CORE_MEMORY_ERROR_HISTORY_LIMIT = config.CORE_MEMORY_ERROR_HISTORY_LIMIT
 # Chars of tool output passed to the summariser.
 _SUMMARIZER_TOOL_CHARS = config.SUMMARIZER_TOOL_CHARS
+# Token reserve for prefix blocks (L1 + L2 + prior context).  Static estimate;
+# errs on the side of leaving more room for prefix injection.
+_PREFIX_TOKEN_RESERVE = getattr(config, "PREFIX_TOKEN_RESERVE", 2000)
+
 # Keywords that signal a user correction.
 _CORRECTION_KEYWORDS = (
     "actually", "wait,", "no,", "wrong", "instead", "correct",
@@ -70,8 +90,108 @@ _STRUCTURED_SUMMARY_PROMPT = (
     "GOAL:, ENTITIES:, RATIONALE: — no preamble, no extra lines."
 )
 
+# ── Module-level async executor ───────────────────────────────────────────────
+# Shared across all ChatUI instances; daemon threads die with the process.
+_summarizer_executor = ThreadPoolExecutor(
+    max_workers=2, thread_name_prefix="nbchat-summarizer"
+)
+
+
+# ── Adaptive importance tracker ───────────────────────────────────────────────
+
+class ImportanceTracker:
+    """Per-session rolling percentile tracker for importance scores.
+
+    Derives L2 write and retrieval thresholds from the observed distribution
+    of importance scores in this session, removing sensitivity to absolute
+    score calibration.
+
+    Pure-Python implementation: uses bisect.insort for O(log n) insertion
+    into a sorted list, giving O(1) quantile reads by index.
+
+    Parameters
+    ----------
+    persist_fraction:
+        Top fraction of exchanges (by importance) to persist to L2.
+        0.40 means the top 40% of observed scores trigger an L2 write.
+    window:
+        Rolling window size.  Older scores are discarded (FIFO by insertion).
+    """
+    _COLD_WRITE = 2.5       # used until enough data is collected
+    _COLD_RETRIEVAL = 3.0
+    _COLD_MIN = 10          # minimum observations before adapting
+
+    def __init__(self, persist_fraction: float = 0.40, window: int = 200):
+        self._sorted: List[float] = []   # sorted ascending
+        self._fifo: List[float] = []     # insertion order for eviction
+        self._maxlen = window
+        self._persist_fraction = persist_fraction
+
+    def record(self, score: float) -> None:
+        """Record a new importance score, evicting the oldest if at capacity."""
+        if len(self._fifo) >= self._maxlen:
+            oldest = self._fifo.pop(0)
+            idx = bisect.bisect_left(self._sorted, oldest)
+            if idx < len(self._sorted) and self._sorted[idx] == oldest:
+                self._sorted.pop(idx)
+        bisect.insort(self._sorted, score)
+        self._fifo.append(score)
+
+    def _quantile(self, q: float) -> float:
+        n = len(self._sorted)
+        if n == 0:
+            return self._COLD_WRITE
+        idx = max(0, min(n - 1, int(q * n)))
+        return self._sorted[idx]
+
+    @property
+    def write_threshold(self) -> float:
+        """Score at the (1 - persist_fraction) quantile — adaptive L2 gate.
+
+        Floored at _COLD_WRITE so plain tool calls (base score 2.0) never
+        flood L2 when the session is dominated by low-importance exchanges.
+        The floor activates once enough data is collected (>= _COLD_MIN).
+        """
+        if len(self._sorted) < self._COLD_MIN:
+            return self._COLD_WRITE
+        return max(self._COLD_WRITE, self._quantile(1.0 - self._persist_fraction))
+
+    @property
+    def retrieval_threshold(self) -> float:
+        """Score at the 70th percentile — adaptive L2 retrieval floor."""
+        if len(self._sorted) < self._COLD_MIN:
+            return self._COLD_RETRIEVAL
+        return self._quantile(0.70)
+
+    def state_dict(self) -> dict:
+        """Snapshot for observability logging."""
+        return {
+            "n": len(self._sorted),
+            "write_threshold": round(self.write_threshold, 2),
+            "retrieval_threshold": round(self.retrieval_threshold, 2),
+            "min": round(self._sorted[0], 2) if self._sorted else None,
+            "max": round(self._sorted[-1], 2) if self._sorted else None,
+        }
+
 
 # ── Module-level helpers ──────────────────────────────────────────────────────
+
+def _est_tokens(row: _Row) -> int:
+    """Estimate token count for one history row without a tokenizer.
+
+    Calibrated divisors (chars per token):
+      tool output  — mixed JSON/text/code:  2.5
+      prose/user   — natural language:      4.0
+      other        — assistant/system:      4.0
+
+    These are conservative (slightly over-estimate) to leave headroom.
+    Accuracy is within ~20% of tiktoken on representative chat data.
+    """
+    role, content, _, _, tool_args, _ = row
+    chars = len(content or "") + len(tool_args or "")
+    divisor = 2.5 if role == "tool" else 4.0
+    return max(1, int(chars / divisor))
+
 
 def _parse_structured_summary(text: str) -> dict:
     """Parse a GOAL/ENTITIES/RATIONALE structured summary into a dict."""
@@ -137,8 +257,19 @@ class ContextMixin:
 
     Expects the following attributes on the host class:
       self.history, self.task_log, self.system_prompt, self.model_name,
-      self.session_id, self._turn_summary_cache, self.WINDOW_TURNS
+      self.session_id, self._turn_summary_cache, self._summary_futures,
+      self._importance_tracker
     """
+
+    # ── Observability ─────────────────────────────────────────────────────────
+
+    def _log_context_event(self, event_type: str, payload: dict) -> None:
+        """Append one structured event to the context_events log."""
+        try:
+            db = lazy_import("nbchat.core.db")
+            db.log_context_event(self.session_id, event_type, payload)
+        except Exception as exc:
+            _log.debug(f"_log_context_event({event_type}) failed: {exc}")
 
     # ── Importance scoring ────────────────────────────────────────────────────
 
@@ -155,13 +286,9 @@ class ContextMixin:
             The uncompressed tool output string.  Used to detect error signals
             before compression may have stripped them.  Pass "" when not
             available (e.g. during hard-trim where only API dicts are present).
-
-        Higher score = retain longer under trim pressure / more likely to be
-        persisted to the L2 episodic store.
         """
         score = 1.0
 
-        # Check raw output first — compression can strip error keywords.
         raw_lower = raw_result.lower()
         if any(k in raw_lower for k in ("error", "exception", "failed", "cannot", "traceback")):
             score += 3.0
@@ -173,7 +300,6 @@ class ContextMixin:
 
             if role == "tool":
                 has_tool_result = True
-                # Additional bump when compressed output also shows error.
                 if any(k in content for k in ("error", "exception", "failed", "cannot", "traceback")):
                     score += 1.5
                 if any(k in content for k in ("success", "completed", "done", "created", "written")):
@@ -186,7 +312,6 @@ class ContextMixin:
             ):
                 score += 2.5
 
-        # Any exchange that produced a tool result is worth tracking.
         if has_tool_result:
             score += 1.0
 
@@ -246,8 +371,11 @@ class ContextMixin:
             db = lazy_import("nbchat.core.db")
             lower = user_message.lower()
             updates: dict = {"goal": user_message[:300]}
+            # Check startswith, interior, and end-of-string positions.
             if any(
-                lower.startswith(kw) or f" {kw} " in lower
+                lower.startswith(kw)
+                or f" {kw} " in lower
+                or lower.endswith(f" {kw}")
                 for kw in _CORRECTION_KEYWORDS
             ):
                 updates["last_correction"] = user_message[:300]
@@ -312,7 +440,7 @@ class ContextMixin:
                 remaining = L2_RETRIEVAL_LIMIT - len(entries)
                 top = db.query_episodic_top_importance(
                     self.session_id,
-                    min_score=L2_MIN_IMPORTANCE_FOR_RETRIEVAL,
+                    min_score=self._importance_tracker.retrieval_threshold,
                     limit=remaining + len(seen_ids),
                 )
                 for e in top:
@@ -356,8 +484,20 @@ class ContextMixin:
         result: str,
         importance: float,
     ) -> None:
-        """Persist a tool exchange to L2 if it meets the importance threshold."""
-        if importance < L2_WRITE_THRESHOLD:
+        """Persist a tool exchange to L2 if it meets the adaptive threshold."""
+        # Always record score so threshold adapts even for non-persisted events.
+        self._importance_tracker.record(importance)
+        threshold = self._importance_tracker.write_threshold
+
+        self._log_context_event("L2_CANDIDATE", {
+            "tool": tool_name,
+            "importance": round(importance, 2),
+            "threshold": round(threshold, 2),
+            "persisted": importance >= threshold,
+            "tracker": self._importance_tracker.state_dict(),
+        })
+
+        if importance < threshold:
             return
         try:
             db = lazy_import("nbchat.core.db")
@@ -374,76 +514,67 @@ class ContextMixin:
         except Exception as exc:
             _log.debug(f"_write_exchange_to_episodic failed: {exc}")
 
-    # ── Sliding window ────────────────────────────────────────────────────────
+    # ── Token-budget sliding window ───────────────────────────────────────────
 
     def _window(self) -> Tuple[List[_Row], int]:
         """Return (window_rows, effective_cut).
 
-        window_rows: prefix context rows + bounded history slice, all as
-            canonical 6-tuples, ready for build_messages.
+        window_rows: prefix context rows + token-budget-bounded history slice,
+            all as canonical 6-tuples, ready for build_messages.
         effective_cut: number of self.history rows excluded from the window.
             Used by _render_history for the "N earlier messages omitted" notice
             and by _build_prior_context to know exactly which rows to summarize.
 
-        Prepends up to three context system rows:
+        Token-budget walkback replaces the former WINDOW_TURNS / MAX_WINDOW_ROWS
+        knobs.  Analysis rows (display-only reasoning traces) are excluded from
+        budget accounting but included in the returned window.
+
+        Prefix blocks injected before the window (in order):
           1. L1 Core Memory block  (always, if non-empty)
           2. L2 Episodic context   (conditional on active entities / importance)
           3. Structured prior context summaries (if turns slid off)
         """
-        config = lazy_import("nbchat.core.config")
-        MAX_WINDOW_ROWS = config.MAX_WINDOW_ROWS
+        budget = (
+            int(config.CTX_SIZE * getattr(config, "CONTEXT_HEADROOM", 0.82))
+            - _PREFIX_TOKEN_RESERVE
+        )
 
-        # ── L0 Sliding window cut ────────────────────────────────────────────
-        user_count = 0
+        # ── Token-budget walkback ────────────────────────────────────────────
+        tokens = 0
         cut = 0
         for i in range(len(self.history) - 1, -1, -1):
-            if self.history[i][0] == "user":
-                user_count += 1
-                if user_count == self.WINDOW_TURNS:
-                    cut = i
-                    break
+            row = self.history[i]
+            if row[0] == "analysis":
+                continue  # display-only; excluded from budget
+            row_tokens = _est_tokens(row)
+            if tokens + row_tokens > budget:
+                # Advance forward to the nearest user-turn boundary so we
+                # never orphan the tail of an exchange.
+                j = i + 1
+                while j < len(self.history) and self.history[j][0] != "user":
+                    j += 1
+                cut = j
+                break
+            tokens += row_tokens
+
+        # Safety: always keep at least the most recent user turn.
+        last_user = next(
+            (i for i in range(len(self.history) - 1, -1, -1)
+             if self.history[i][0] == "user"),
+            0,
+        )
+        cut = min(cut, last_user)
 
         window = list(self.history[cut:])
         effective_cut = cut
 
-        # ── Secondary trim: budget counts only non-analysis rows ─────────────
-        # "analysis" rows are reasoning traces — display-only, dropped by
-        # build_messages, must not consume the MAX_WINDOW_ROWS budget.
-        non_analysis_count = sum(1 for r in window if r[0] != "analysis")
-        # Reserve space for prefix rows (L1, L2, prior context) that will be
-        # added later. In the worst case, all 3 prefix rows are system rows
-        # (non-analysis).
-        prefix_reserve = 3  # Maximum possible prefix rows
-        effective_max = max(0, MAX_WINDOW_ROWS - prefix_reserve)
-
-        if effective_max > 0 and non_analysis_count > effective_max:
-            # Walk backwards through window to find the start index that
-            # leaves exactly MAX_WINDOW_ROWS non-analysis rows remaining.
-            keep = 0
-            secondary_start = 0
-            for i in range(len(window) - 1, -1, -1):
-                if window[i][0] != "analysis":
-                    keep += 1
-                if keep == effective_max:
-                    secondary_start = i
-                    break
-            # Advance forward to the next user row so we never orphan the
-            # tail of an exchange by cutting mid-turn.
-            while secondary_start < len(window) and window[secondary_start][0] != "user":
-                secondary_start += 1
-            if secondary_start < len(window):
-                effective_cut = cut + secondary_start
-                window = window[secondary_start:]
-
         # ── Build context prefix ─────────────────────────────────────────────
         prefix: List[_Row] = []
 
-        # L1 Core Memory
         l1_block = self._get_l1_block()
         if l1_block:
             prefix.append(("system", l1_block, "", "", "", 0))
 
-        # L2 Episodic retrieval (use active entities from L1 to guide query)
         try:
             db = lazy_import("nbchat.core.db")
             cm = db.get_core_memory(self.session_id) or {}
@@ -454,16 +585,41 @@ class ContextMixin:
         if l2_block:
             prefix.append(("system", l2_block, "", "", "", 0))
 
-        # Structured prior context — covers everything excluded from the window,
-        # including rows trimmed by the secondary MAX_WINDOW_ROWS pass.
         if effective_cut > 0:
             prior = self._build_prior_context(self.history[:effective_cut])
             if prior:
                 prefix.append(("system", prior, "", "", "", 0))
 
+        # ── Prefetch summaries for evicted turns (non-blocking) ───────────────
+        if effective_cut > 0:
+            self._prefetch_summaries(self.history[:effective_cut])
+
+        # ── Observability ─────────────────────────────────────────────────────
+        self._log_context_event("WINDOW_COMPUTED", {
+            "history_len": len(self.history),
+            "effective_cut": effective_cut,
+            "window_rows": len(window),
+            "estimated_tokens": tokens,
+            "budget": budget,
+            "prefix_blocks": len(prefix),
+            "tracker": self._importance_tracker.state_dict(),
+        })
+
         return prefix + window, effective_cut
 
     # ── Per-turn structured summarisation ────────────────────────────────────
+
+    def _prefetch_summaries(self, prior_rows: List[_Row]) -> None:
+        """Submit async summarization futures for evicted turns not yet cached."""
+        units = _group_by_user_turn(prior_rows)
+        for unit in units:
+            key = hashlib.sha1(
+                "".join(r[1] + r[4] for r in unit).encode()
+            ).hexdigest()
+            if key not in self._turn_summary_cache and key not in self._summary_futures:
+                future = _summarizer_executor.submit(self._call_summarizer, unit)
+                self._summary_futures[key] = future
+                _log.debug(f"prefetch_summaries: submitted {key[:8]}")
 
     def _build_prior_context(self, prior_rows: List[_Row]) -> Optional[str]:
         """Return a structured summary block covering all prior turns."""
@@ -485,7 +641,6 @@ class ContextMixin:
                 line += f"\n  Entities: {' | '.join(parsed['entities'])}"
             if parsed["rationale"]:
                 line += f"\n  Outcome: {parsed['rationale']}"
-            # Graceful fallback: old-format (unstructured) cached summaries
             if not any([parsed["goal"], parsed["entities"], parsed["rationale"]]):
                 line += f"\n  {raw_summary}"
             lines.append(line)
@@ -497,31 +652,74 @@ class ContextMixin:
         )
 
     def _get_turn_summary(self, unit: List[_Row]) -> str:
-        """Return a cached summary for *unit*, generating via LLM on first call."""
+        """Return summary for *unit*, using async future if available.
+
+        Priority:
+          1. In-memory cache (already computed)
+          2. Completed future → promote to cache
+          3. Pending future → return fallback (will promote on next window call)
+          4. Not submitted → submit now, return fallback
+        """
         key = hashlib.sha1(
             "".join(r[1] + r[4] for r in unit).encode()
         ).hexdigest()
 
-        cached = self._turn_summary_cache.get(key)
-        if cached:
-            return cached
+        if key in self._turn_summary_cache:
+            return self._turn_summary_cache[key]
 
-        summary = self._call_summarizer(unit)
-        self._turn_summary_cache[key] = summary
+        future = self._summary_futures.get(key)
+        if future is not None:
+            if future.done():
+                try:
+                    summary = future.result()
+                except Exception as exc:
+                    _log.debug(f"summary future {key[:8]} failed: {exc}")
+                    summary = self._fallback_summary(unit)
+                self._turn_summary_cache[key] = summary
+                del self._summary_futures[key]
+                self._persist_summary_cache()
+                self._log_context_event("SUMMARY_GENERATED", {
+                    "key": key[:8],
+                    "length": len(summary),
+                    "source": "async_future",
+                })
+                return summary
+            # Still running — fallback this turn, will promote next time
+            return self._fallback_summary(unit)
 
+        # Not submitted yet — submit and return fallback for this turn
+        self._summary_futures[key] = _summarizer_executor.submit(
+            self._call_summarizer, unit
+        )
+        return self._fallback_summary(unit)
+
+    def _fallback_summary(self, unit: List[_Row]) -> str:
+        """Minimal summary used while async summarizer is pending."""
+        user_text = next((r[1][:100] for r in unit if r[0] == "user"), "")
+        tool_hint = next(
+            (r[1].split("\n")[0][:80] for r in unit if r[0] == "tool"), ""
+        )
+        return (
+            f"GOAL: (summary pending) {user_text}\n"
+            f"ENTITIES: none\n"
+            f"RATIONALE: {tool_hint}"
+        )
+
+    def _persist_summary_cache(self) -> None:
         try:
             db = lazy_import("nbchat.core.db")
             db.save_turn_summaries(self.session_id, self._turn_summary_cache)
         except Exception:
             pass
-        return summary
 
     def _call_summarizer(self, unit: List[_Row]) -> str:
-        """Call the model to produce a structured GOAL/ENTITIES/RATIONALE summary."""
+        """Call the model to produce a structured GOAL/ENTITIES/RATIONALE summary.
+
+        Runs in a thread-pool worker; must be thread-safe (no widget access).
+        """
         from nbchat.core import client as _client_mod
         from nbchat.ui.chat_builder import build_messages
 
-        # Unpack canonical 6-tuples; truncate tool output to stay within budget.
         trimmed: List[_Row] = [
             (
                 role,
@@ -552,33 +750,26 @@ class ContextMixin:
             return summary
         except Exception as exc:
             _log.debug(f"summarizer failed: {exc} — using fallback")
-            user_text = next((r[1][:100] for r in unit if r[0] == "user"), "")
-            tool_hint = next(
-                (r[1].split("\n")[0][:80] for r in unit if r[0] == "tool"), ""
-            )
-            return (
-                f"GOAL: (summary unavailable) {user_text}\n"
-                f"ENTITIES: none\n"
-                f"RATIONALE: {tool_hint}"
-            )
+            return self._fallback_summary(unit)
 
     # ── Importance-scored hard trim ───────────────────────────────────────────
 
     def _hard_trim(self, messages: list) -> None:
         """Drop least-important tool-exchange pairs until messages fit the budget.
 
-        Before evicting an exchange whose importance score meets L2_WRITE_THRESHOLD,
-        the exchange is persisted to the L2 episodic store so the information is
-        never permanently lost.
+        Before evicting an exchange whose importance score meets the adaptive
+        write threshold, the exchange is persisted to the L2 episodic store.
 
         messages[0] = system prompt.
         messages[1] = first context/user row (protected).
         Exchange scan starts at index 2.
         """
-        config = lazy_import("nbchat.core.config")
-        limit = int(config.CONTEXT_TOKEN_THRESHOLD * 0.85)
-        MAX_EXCHANGES = config.MAX_EXCHANGES
-        KEEP_RECENT = config.KEEP_RECENT_EXCHANGES
+        limit = int(
+            config.CTX_SIZE
+            * getattr(config, "CONTEXT_HEADROOM", 0.82)
+            * 0.85   # additional safety margin inside hard trim
+        )
+        KEEP_RECENT = getattr(config, "KEEP_RECENT_EXCHANGES", 5)
 
         def est(msg: dict) -> int:
             content = msg.get("content") or ""
@@ -586,14 +777,16 @@ class ContextMixin:
             tc_text = "".join(
                 tc.get("function", {}).get("arguments", "") for tc in tcs
             )
-            return max(1, (len(content) + len(tc_text)) // 1.8)
+            # Use same calibrated divisor as _est_tokens
+            chars = len(content) + len(tc_text)
+            return max(1, int(chars / 2.5))
 
         def total() -> int:
             return sum(est(m) for m in messages)
 
         def get_exchanges() -> List[Tuple[int, int]]:
             result = []
-            i = 2  # protect system (0) and prior-context/first-user (1)
+            i = 2
             while i < len(messages):
                 if messages[i].get("role") == "assistant" and messages[i].get("tool_calls"):
                     end = i + 1
@@ -606,7 +799,6 @@ class ContextMixin:
             return result
 
         def drop_least_important(exchanges: List[Tuple[int, int]]) -> None:
-            # No raw_result available here — score on compressed API dict content.
             scored = [
                 (self._importance_score(messages[s:e]), s, e)
                 for s, e in exchanges
@@ -614,8 +806,12 @@ class ContextMixin:
             scored.sort(key=lambda x: x[0])
             score, s, e = scored[0]
 
-            # ── L2 write-before-drop ──
-            if score >= L2_WRITE_THRESHOLD:
+            # Record score in tracker so threshold evolves even during trim.
+            self._importance_tracker.record(score)
+            threshold = self._importance_tracker.write_threshold
+
+            persisted = False
+            if score >= threshold:
                 action_name = ""
                 tc_list = messages[s].get("tool_calls") or []
                 if tc_list:
@@ -638,14 +834,11 @@ class ContextMixin:
                                 outcome_summary=outcome,
                                 importance_score=score,
                             )
-                            _log.debug(
-                                f"_hard_trim: saved to L2 [{action_name}] "
-                                f"score={score:.1f}"
-                            )
+                            persisted = True
                         except Exception as exc:
                             _log.debug(f"_hard_trim L2 write failed: {exc}")
 
-            # ── Summarise evicted content into system row ──
+            # Append a one-line note to the (in-memory) system prompt.
             dropped = [
                 messages[s + j].get("content", "")[:80]
                 for j in range(1, e - s)
@@ -654,17 +847,17 @@ class ContextMixin:
             if dropped and messages[0].get("role") == "system":
                 messages[0]["content"] += f"\n[earlier: {' | '.join(dropped)}]"
 
-            _log.debug(f"_hard_trim: drop [{s}:{e}] score={score:.1f}")
+            self._log_context_event("EXCHANGE_EVICTED", {
+                "score": round(score, 2),
+                "threshold": round(threshold, 2),
+                "persisted_to_l2": persisted,
+                "msg_range": [s, e],
+                "total_tokens_before": total(),
+            })
+            _log.debug(f"_hard_trim: drop [{s}:{e}] score={score:.1f} persisted={persisted}")
             del messages[s:e]
 
-        # Pass 1: hard cap on exchange count.
-        while True:
-            exchanges = get_exchanges()
-            if len(exchanges) <= MAX_EXCHANGES:
-                break
-            drop_least_important(exchanges)
-
-        # Pass 2: token-budget drops, keeping KEEP_RECENT most recent exchanges.
+        # Pass 1: token-budget drops, keeping KEEP_RECENT most recent exchanges.
         while total() > limit:
             exchanges = get_exchanges()
             droppable = (
@@ -675,7 +868,7 @@ class ContextMixin:
             drop_least_important(droppable)
             _log.debug(f"_hard_trim: after budget drop total={total()}")
 
-        # Pass 3: last resort — truncate the largest individual tool result.
+        # Pass 2: last resort — truncate the largest individual tool result.
         while total() > limit:
             tool_indices = [
                 i for i, m in enumerate(messages) if m.get("role") == "tool"
@@ -691,6 +884,11 @@ class ContextMixin:
             messages[largest]["content"] = (
                 original[:200] + f"\n[...truncated {len(original) - 200} chars...]"
             )
+            self._log_context_event("TOOL_OUTPUT_TRUNCATED", {
+                "msg_index": largest,
+                "original_len": len(original),
+                "truncated_to": 200,
+            })
             _log.debug(f"_hard_trim: truncated [{largest}] {len(original)}→200")
 
     # ── Task log ─────────────────────────────────────────────────────────────

@@ -13,6 +13,7 @@ Tables:
 from __future__ import annotations
 
 import json
+import hashlib
 import sqlite3
 from pathlib import Path
 from typing import Any
@@ -90,6 +91,19 @@ def init_db() -> None:
                 PRIMARY KEY (session_id, key)
             )
         """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS context_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id  TEXT NOT NULL,
+                event_type  TEXT NOT NULL,
+                payload     TEXT DEFAULT '{}',
+                ts          TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ce_session "
+            "ON context_events(session_id, event_type)"
+        )
         conn.commit()
 
 
@@ -402,3 +416,59 @@ def load_global_monitoring_stats() -> dict | None:
         return json.loads(raw)
     except Exception:
         return None
+    
+_PASTE_SESSION_ID = "__paste_store__"
+ 
+ 
+def log_context_event(session_id: str, event_type: str, payload: dict) -> None:
+    """Append one structured context-management event for observability."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.execute(
+            "INSERT INTO context_events (session_id, event_type, payload) "
+            "VALUES (?, ?, ?)",
+            (session_id, event_type, json.dumps(payload)),
+        )
+        conn.commit()
+ 
+ 
+def query_context_events(
+    session_id: str,
+    event_type: str | None = None,
+    limit: int = 100,
+) -> list[dict]:
+    """Return recent context events for *session_id*, newest first."""
+    with sqlite3.connect(DB_PATH) as conn:
+        conn.row_factory = sqlite3.Row
+        if event_type:
+            rows = conn.execute(
+                "SELECT id, event_type, payload, ts FROM context_events "
+                "WHERE session_id = ? AND event_type = ? "
+                "ORDER BY id DESC LIMIT ?",
+                (session_id, event_type, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                "SELECT id, event_type, payload, ts FROM context_events "
+                "WHERE session_id = ? ORDER BY id DESC LIMIT ?",
+                (session_id, limit),
+            ).fetchall()
+    return [dict(r) for r in rows]
+ 
+ 
+def store_paste_content(content: str) -> str:
+    """Store large paste content by content hash; return the hash reference.
+ 
+    Content is stored under the sentinel session '__paste_store__' so it
+    survives session resets and is deduplicated across sessions.
+    Returns the sha256 hex digest, which callers embed in place of the
+    full content (e.g. as '[paste:abc123...]' in the message).
+    """
+    content_hash = _hashlib.sha256(content.encode()).hexdigest()
+    _meta_set(_PASTE_SESSION_ID, content_hash, content)
+    return content_hash
+ 
+ 
+def retrieve_paste_content(content_hash: str) -> str | None:
+    """Retrieve paste content by hash reference; None if not found."""
+    raw = _meta_get(_PASTE_SESSION_ID, content_hash)
+    return raw if raw else None

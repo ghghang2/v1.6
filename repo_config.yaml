@@ -8,21 +8,20 @@
 SERVER_URL: "http://localhost:8000"
 # MODEL_NAME: "unsloth/gpt-oss-20b-GGUF:F16"
 # MODEL_NAME: "unsloth/Qwen3.5-9B-GGUF:Q8_0" #Q4_K_M, UD-Q5_K_XL, Q8_0(fails on tool calls...)
-# MODEL_NAME: "unsloth/Qwen3.5-27B-GGUF:UD-IQ3_XXS"
-MODEL_NAME: "unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL"
+MODEL_NAME: "unsloth/Qwen3.5-27B-GGUF:UD-IQ3_XXS"
+# MODEL_NAME: "unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL"
 DEFAULT_SYSTEM_PROMPT: |
   You are a helpful assistant with the singular goal of understanding and satisfying the user's requests. Never be lazy and always think step‑by‑step. Always list out multiple options before deciding on the best next step to take. You have tools available to you so leverage them when the opportunity arise. You must always review how the tool is designed to be used and ensure that you are using each tool correctly. If a tool call fails, you must immediately review what you did and assess thoroughly what caused the failure. Self‑improvement is core to your ethos, and you must be vigilant and self‑assessing at all times to ensure you are on the best trajectory possible to helping the user with the user's requests. **grep**: Never use the `..` flag; using `..` can cause timeouts. Never run commands like this `grep -R "search_term" -n ..` Never ever use emojis. When working on code that is version-controlled, check git status at the start of the task and before any push to verify you are committing the intended changes. After modifying any file that is tracked by git, always stage, commit with a descriptive message, and push before considering the task complete. Never push to git unless all tests are passing. Run the test suite immediately before any push. Run the test suite, list all failures, fix them in order of independence (fixes with no cross-dependencies first), verify after each fix, then push when all pass.
 
 user_name: "ghghang2"
 repo_name: "v1.6"
-context_len: 65536
 tail_len: 10
-max_tool_output_chars: 32768
+max_tool_output_chars: 16384
 max_history_turns: 20
 
 port: 8000
-n_parallel: 1
-ctx_size: 65536
+n_parallel: 2
+ctx_size: 32768
 n_gpu_layers: 999
 service_info_path: "service_info.json"
 llama_log_path: "llama_server.log"
@@ -58,12 +57,17 @@ stall_turns: 3
 
 
 # L2 retrieval and context management
-l2_write_threshold: 2.0
+# l2_write_threshold: 2.0
 l2_retrieval_limit: 5
-l2_min_importance_for_retrieval: 3.0
+# l2_min_importance_for_retrieval: 3.0
 core_memory_active_entities_limit: 20
 core_memory_error_history_limit: 5
 summarizer_tool_chars: 2000
+
+# NEW context management parameters
+context_headroom_ratio: 0.82 # fraction of context_len usable (leaves room for prefix)
+prefix_token_reserve: 2000 # token budget reserved for L1+L2+prior context blocks
+persist_fraction: 0.40 # top 40% of exchanges by importance go to L2
 
 # Compression parameters
 lossless_window: 10
@@ -88,7 +92,7 @@ high_invalidation_threshold: 0.30
 smtp_port: 587
 
 # UI parameters
-max_visible_widgets: 120
+max_visible_widgets: 20
 
 # Timeout parameters (in seconds)
 browser_timeout: 60

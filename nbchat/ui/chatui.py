@@ -32,7 +32,7 @@ from IPython.display import display
 
 from nbchat.ui import chat_renderer as renderer
 from nbchat.ui import chat_builder
-from nbchat.ui.context_manager import ContextMixin
+from nbchat.ui.context_manager import ContextMixin, ImportanceTracker
 from nbchat.ui.conversation import ConversationMixin
 from nbchat.ui.utils import changed_files
 from nbchat.core.utils import lazy_import
@@ -45,7 +45,7 @@ class ChatUI(ContextMixin, ConversationMixin):
     config = lazy_import("nbchat.core.config")
 
     MAX_TOOL_TURNS = config.MAX_TOOL_TURNS
-    WINDOW_TURNS = config.WINDOW_TURNS
+    # WINDOW_TURNS = config.WINDOW_TURNS
     MAX_VISIBLE_WIDGETS = config.MAX_VISIBLE_WIDGETS
 
     def __init__(self):
@@ -61,6 +61,10 @@ class ChatUI(ContextMixin, ConversationMixin):
         self.history: List[Tuple[str, str, str, str, str, int]] = []
         self.task_log: List[str] = []
         self._turn_summary_cache: dict = {}
+        self._summary_futures: dict = {}
+        self._importance_tracker = ImportanceTracker(
+            persist_fraction=getattr(config, "PERSIST_FRACTION", 0.40)
+        )
 
         # threading.Event replaces the plain bool so set/clear/is_set are
         # individually atomic and safe across the UI and background threads.
