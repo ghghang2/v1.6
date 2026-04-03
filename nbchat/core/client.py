@@ -78,6 +78,7 @@ class MetricsLoggingClient:
     def create(self, *args, **kwargs):
         if kwargs.get("stream"):
             kwargs.setdefault("stream_options", {})["include_usage"] = True
+        kwargs.setdefault("extra_body", {})["cache_prompt"] = True
         t0 = time.time()
         try:
             response = self._client.chat.completions.create(*args, **kwargs)
