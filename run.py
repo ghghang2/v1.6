@@ -182,11 +182,11 @@ def main() -> None:
         "--mlock",
         "--metrics",
         # # Speculative decoding — draft on GPU!
-        "-hfrd", "unsloth/Qwen3.5-0.8B-GGUF:IQ4_XS",
-        "-ngld", "999",             # ← KEY FIX: put the 0.8B on GPU, it's ~300MB
-        "--ctx-size-draft", "4096", # ← smaller draft ctx saves VRAM
-        "--draft", "8",
-        "--draft-p-min", "0.5",     # lower threshold for thinking-token uncertainty
+        # "-hfrd", "unsloth/Qwen3.5-0.8B-GGUF:IQ4_XS",
+        # "-ngld", "999",             # ← KEY FIX: put the 0.8B on GPU, it's ~300MB
+        # "--ctx-size-draft", "8192", # ← smaller draft ctx saves VRAM
+        # "--draft", "16",
+        # "--draft-p-min", "0.5",     # lower threshold for thinking-token uncertainty
     ]
     pids["llama"] = _run_detached(llama_cmd, LLAMA_LOG, "llama-server")
 
