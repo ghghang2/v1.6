@@ -26,7 +26,7 @@ def run_tool(tool_name: str, args_json: str, timeout: int | None = None) -> str:
         return f"Unknown tool '{tool_name}'"
 
     if timeout is None:
-        timeout = 60 if tool_name in ["browser", "run_tests"] else 30
+        timeout = 10 if tool_name in ["browser", "run_tests"] else 5
 
     def execute_with_retry() -> str:
         """Execute tool with retry logic."""

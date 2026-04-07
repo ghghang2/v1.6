@@ -181,31 +181,37 @@ def main() -> None:
         "--no-mmap",
         "--mlock",
         "--metrics",
+        # # Speculative decoding — draft on GPU!
+        "-hfrd", "unsloth/Qwen3.5-0.8B-GGUF:IQ4_XS",
+        "-ngld", "999",             # ← KEY FIX: put the 0.8B on GPU, it's ~300MB
+        "--ctx-size-draft", "4096", # ← smaller draft ctx saves VRAM
+        "--draft", "8",
+        "--draft-p-min", "0.5",     # lower threshold for thinking-token uncertainty
     ]
     pids["llama"] = _run_detached(llama_cmd, LLAMA_LOG, "llama-server")
 
-    # 3. Start WhatsApp Python Server
-    wa_py_cmd = f"python -m nbchat.channels.whatsapp_server"
-    pids["whatsapp_python"] = _run_detached(
-        wa_py_cmd, 
-        REPO_ROOT / "whatsapp_server.log", 
-        "WhatsApp Python Server",
-        extra_env={"WA_PORT": WA_PORT}
-    )
-    time.sleep(2) # Let FastAPI bind
+    # # 3. Start WhatsApp Python Server
+    # wa_py_cmd = f"python -m nbchat.channels.whatsapp_server"
+    # pids["whatsapp_python"] = _run_detached(
+    #     wa_py_cmd, 
+    #     REPO_ROOT / "whatsapp_server.log", 
+    #     "WhatsApp Python Server",
+    #     extra_env={"WA_PORT": WA_PORT}
+    # )
+    # time.sleep(2) # Let FastAPI bind
 
-    # 4. Start WhatsApp Bridge (Node)
-    bridge_path = CHANNELS_DIR / "whatsapp_bridge.js"
-    if not bridge_path.exists():
-        sys.exit(f"[ERROR] Bridge script not found: {bridge_path}")
+    # # 4. Start WhatsApp Bridge (Node)
+    # bridge_path = CHANNELS_DIR / "whatsapp_bridge.js"
+    # if not bridge_path.exists():
+    #     sys.exit(f"[ERROR] Bridge script not found: {bridge_path}")
     
-    wa_node_cmd = f"node {bridge_path}"
-    pids["whatsapp_bridge"] = _run_detached(
-        wa_node_cmd, 
-        REPO_ROOT / "whatsapp_bridge.log", 
-        "WhatsApp Node Bridge",
-        extra_env={"WA_PORT": WA_PORT, "WA_ALLOW": WA_ALLOW}
-    )
+    # wa_node_cmd = f"node {bridge_path}"
+    # pids["whatsapp_bridge"] = _run_detached(
+    #     wa_node_cmd, 
+    #     REPO_ROOT / "whatsapp_bridge.log", 
+    #     "WhatsApp Node Bridge",
+    #     extra_env={"WA_PORT": WA_PORT, "WA_ALLOW": WA_ALLOW}
+    # )
 
     # 5. Environment Setup
     print("Installing remaining dependencies...")
