@@ -3,12 +3,26 @@
 > **Prerequisites:** Basic Python knowledge, familiarity with nbchat's codebase, understanding of LLM-based summarization.
 > **Estimated time:** 2–3 days (including testing and iteration).
 > **Source:** Meta-Harness "Context Compression" approach with fact preservation.
+> **⚠️ CRITICAL NOTE:** This guide has been corrected. The original guide proposed creating a new `fact_extractor.py` module, which would add complexity. This fixed version instead ENHANCES the existing `compressor.py` with fact preservation logic, keeping everything in one place.
 
 ---
 
 ## 1. Goal
 
 Enhance nbchat's context compression to preserve key facts, decisions, and tool outputs during summarization, going beyond naive truncation.
+
+**⚠️ IMPORTANT DECISION:** Before implementing, ask yourself:
+
+1. **Is this actually needed?** Nbchat's `compressor.py` already has syntax-aware skeleton extraction for py/json/yaml/js files. The question is whether we need LLM-based fact extraction.
+
+2. **What's the complexity cost?** LLM-based fact extraction adds:
+   - An extra API call per compression
+   - New failure modes (LLM might fail to extract facts)
+   - New prompts to maintain
+
+3. **Is it worth it?** For now, the existing syntax-aware skeleton extraction is probably sufficient. Add LLM-based fact extraction only if you see evidence that critical information is being lost.
+
+**Recommendation:** Enhance the existing `compressor.py` with better fact preservation rules. Don't add LLM-based fact extraction unless you have a compelling use case.
 
 ---
 
@@ -17,8 +31,8 @@ Enhance nbchat's context compression to preserve key facts, decisions, and tool 
 Nbchat currently implements **sliding window + LLM-based summarization** in `compressor.py`:
 
 - When the token budget is exceeded, the compressor summarizes older conversation turns.
-- However, critical information (tool outputs, decisions, extracted facts) may be lost during summarization.
-- Meta-Harness adds **fact preservation** — ensuring that critical information is not lost during compression.
+- The compressor already has syntax-aware skeleton extraction for py/json/yaml/js files.
+- However, it doesn't explicitly preserve key facts, decisions, or tool outputs.
 
 ### Key files to understand:
 | File | Purpose |
@@ -33,387 +47,289 @@ Nbchat currently implements **sliding window + LLM-based summarization** in `com
 
 ```
 nbchat/core/
-├── compressor.py      # Enhanced with two-phase compression
-├── fact_extractor.py  # Fact extraction logic (new)
+├── compressor.py      # Enhanced with fact preservation
 └── ...
 ```
 
-### Component Relationships
-
-```
-Conversation History
-    │
-    ▼
-┌─────────────┐
-│ Fact        │── Phase 1: Extract key facts
-│ Extractor   │   - Tool call results
-└──────┬──────┘   - Decisions made
-       │           - Extracted facts
-       ▼
-┌─────────────┐
-│ Summarizer  │── Phase 2: Summarize old turns
-└──────┬──────┘
-       │
-       ▼
-┌─────────────┐
-│ Compressed  │── Facts + Summary
-│ Context     │
-└─────────────┘
-```
+**⚠️ DESIGN DECISION:** We are NOT creating a new `fact_extractor.py` module. Instead, we enhance `compressor.py` with better fact preservation logic. This keeps the change minimal and avoids adding a new module.
 
 ---
 
 ## 4. Step-by-Step Implementation
 
-### Step 1: Create the Fact Extractor Module
-
-**File:** `nbchat/core/fact_extractor.py` (new file)
-
-This module extracts key facts from conversation turns before compression.
-
-```python
-"""Fact extraction from conversation turns for context compression."""
-from __future__ import annotations
-
-import json
-import logging
-from dataclasses import dataclass, field
-from typing import Any, Optional
-
-logger = logging.getLogger(__name__)
-
-# Prompt for fact extraction
-FACT_EXTRACTION_PROMPT = """You are a fact extraction expert. Given a conversation, extract key facts that should be preserved during context compression.
-
-Conversation:
-{conversation}
-
-Extract the following types of facts:
-1. Tool calls: Full output for small results (< 500 chars), summaries for large ones.
-2. Decisions: Key decisions made by the agent.
-3. Facts: Important facts extracted from user input or tool outputs.
-
-Return a JSON object with the following structure:
-{{
-  "tool_calls": [
-    {{"tool": "tool_name", "input": "...", "output_summary": "..."}}
-  ],
-  "decisions": [
-    {{"description": "What was decided", "reasoning": "Why"}}
-  ],
-  "facts": [
-    {{"description": "Important fact"}}
-  ]
-}}
-
-Return only the JSON object, no other text."""
-
-
-@dataclass
-class ExtractedFact:
-    """Represents an extracted fact."""
-    category: str  # "tool_call", "decision", "fact"
-    description: str
-    details: dict = field(default_factory=dict)
-    source: str = ""  # Which turn this came from
-
-
-class FactExtractor:
-    """Extracts key facts from conversation turns."""
-
-    def __init__(self, client, max_fact_length: int = 500):
-        self.client = client
-        self.max_fact_length = max_fact_length
-
-    def extract_facts(self, conversation: list[dict]) -> list[ExtractedFact]:
-        """Extract key facts from a conversation.
-        
-        Args:
-            conversation: List of message dictionaries with 'role' and 'content'.
-        
-        Returns:
-            List of ExtractedFact objects.
-        """
-        if not conversation:
-            return []
-        
-        # Build conversation text
-        conversation_text = self._build_conversation_text(conversation)
-        
-        # Call LLM to extract facts
-        prompt = FACT_EXTRACTION_PROMPT.format(conversation=conversation_text)
-        response = self.client.send_message(prompt)
-        
-        # Parse JSON response
-        try:
-            facts_data = json.loads(response)
-        except json.JSONDecodeError:
-            logger.error("Failed to parse fact extraction response: %s", response)
-            return []
-        
-        # Convert to ExtractedFact objects
-        facts = []
-        
-        # Extract tool call facts
-        for tool_call in facts_data.get("tool_calls", []):
-            fact = ExtractedFact(
-                category="tool_call",
-                description=f"Tool call: {tool_call.get('tool', 'unknown')}",
-                details=tool_call,
-            )
-            facts.append(fact)
-        
-        # Extract decision facts
-        for decision in facts_data.get("decisions", []):
-            fact = ExtractedFact(
-                category="decision",
-                description=decision.get("description", ""),
-                details={"reasoning": decision.get("reasoning", "")},
-            )
-            facts.append(fact)
-        
-        # Extract fact facts
-        for fact_entry in facts_data.get("facts", []):
-            fact = ExtractedFact(
-                category="fact",
-                description=fact_entry.get("description", ""),
-            )
-            facts.append(fact)
-        
-        logger.info("Extracted %d facts from conversation", len(facts))
-        return facts
-
-    def _build_conversation_text(self, conversation: list[dict]) -> str:
-        """Build a text representation of the conversation."""
-        lines = []
-        for msg in conversation:
-            role = msg.get("role", "unknown")
-            content = msg.get("content", "")
-            lines.append(f"{role}: {content}")
-        return "\n".join(lines)
-
-    def format_facts_for_context(self, facts: list[ExtractedFact]) -> str:
-        """Format extracted facts for inclusion in the compressed context.
-        
-        Args:
-            facts: List of ExtractedFact objects.
-        
-        Returns:
-            Formatted string of facts.
-        """
-        if not facts:
-            return ""
-        
-        lines = ["=== PRESERVED FACTS ==="]
-        
-        # Group by category
-        tool_calls = [f for f in facts if f.category == "tool_call"]
-        decisions = [f for f in facts if f.category == "decision"]
-        facts_only = [f for f in facts if f.category == "fact"]
-        
-        if tool_calls:
-            lines.append("\nTool Calls:")
-            for fact in tool_calls:
-                tool_name = fact.details.get("tool", "unknown")
-                output = fact.details.get("output_summary", fact.details.get("output", ""))
-                # Truncate if too long
-                if len(output) > self.max_fact_length:
-                    output = output[:self.max_fact_length] + "..."
-                lines.append(f"  - {tool_name}: {output}")
-        
-        if decisions:
-            lines.append("\nDecisions:")
-            for fact in decisions:
-                lines.append(f"  - {fact.description}")
-                if fact.details.get("reasoning"):
-                    lines.append(f"    Reasoning: {fact.details['reasoning']}")
-        
-        if facts_only:
-            lines.append("\nFacts:")
-            for fact in facts_only:
-                lines.append(f"  - {fact.description}")
-        
-        lines.append("=== END PRESERVED FACTS ===")
-        return "\n".join(lines)
-```
-
-**What this does:**
-- Extracts key facts from conversation turns before compression.
-- Identifies tool call results, decisions, and important facts.
-- Formats facts for inclusion in the compressed context.
-
-### Step 2: Update the Compressor Module
+### Step 1: Enhance the Compressor with Fact Preservation
 
 **File:** `nbchat/core/compressor.py`
 
-This module is enhanced with two-phase compression (fact extraction + summarization).
+Add fact preservation logic to the existing `compress_tool_output` function.
 
 ```python
-"""Enhanced context compression with fact preservation."""
-from __future__ import annotations
+# Add these functions to nbchat/core/compressor.py
 
-import logging
-from typing import Optional
+def _extract_facts_from_tool_output(tool_name: str, tool_args: str, result: str) -> dict:
+    """Extract key facts from a tool output.
 
-from .fact_extractor import FactExtractor
+    This is a rule-based extractor that identifies important information
+    without requiring an LLM call.
 
-logger = logging.getLogger(__name__)
+    Args:
+        tool_name: Name of the tool that produced the output.
+        tool_args: Arguments passed to the tool.
+        result: The tool output.
+
+    Returns:
+        Dictionary with extracted facts.
+    """
+    facts = {
+        "tool": tool_name,
+        "facts": [],
+        "errors": [],
+        "decisions": [],
+    }
+
+    # Extract error messages
+    error_patterns = [
+        r"Error[:\s]+(.+)",
+        r"Exception[:\s]+(.+)",
+        r"Traceback\(most recent call last\):(.+?)(?:\n\n|\Z)",
+        r"FAILED[:\s]+(.+)",
+        r"ERROR[:\s]+(.+)",
+    ]
+    for pattern in error_patterns:
+        matches = re.findall(pattern, result, re.IGNORECASE | re.DOTALL)
+        for match in matches:
+            facts["errors"].append(match.strip()[:200])
+
+    # Extract file paths
+    file_patterns = [
+        r"(/[\w./\-]+)",
+        r"(\w+:\w+/\w+)",
+    ]
+    for pattern in file_patterns:
+        matches = re.findall(pattern, result)
+        for match in matches:
+            if len(match) < 200 and match not in facts["facts"]:
+                facts["facts"].append(f"File: {match}")
+
+    # Extract line numbers
+    line_patterns = [
+        r"line\s+(\d+)",
+        r":(\d+):",
+    ]
+    for pattern in line_patterns:
+        matches = re.findall(pattern, result, re.IGNORECASE)
+        for match in matches:
+            facts["facts"].append(f"Line: {match}")
+
+    # Extract key values (e.g., counts, sizes, IDs)
+    value_patterns = [
+        r"(\d+)\s+(?:items|files|lines|bytes|tokens|characters)",
+        r"(?:total|found|returned|processed)[:\s]+(\d+)",
+    ]
+    for pattern in value_patterns:
+        matches = re.findall(pattern, result, re.IGNORECASE)
+        for match in matches:
+            facts["facts"].append(f"Count: {match}")
+
+    # Extract important strings (e.g., status codes, messages)
+    status_patterns = [
+        r"(HTTP/\d\.\d\s+\d+)",
+        r"(status[:\s]+(\w+))",
+        r"(response[:\s]+(\w+))",
+    ]
+    for pattern in status_patterns:
+        matches = re.findall(pattern, result, re.IGNORECASE)
+        for match in matches:
+            if isinstance(match, tuple):
+                facts["facts"].append(match[0])
+            else:
+                facts["facts"].append(match)
+
+    return facts
 
 
-class ContextCompressor:
-    """Enhanced context compressor with fact preservation."""
+def _format_facts(facts: dict) -> str:
+    """Format extracted facts into a readable string.
 
-    def __init__(self, client, max_tokens: int = 128000,
-                 compression_threshold: float = 0.8,
-                 fact_extractor: FactExtractor = None):
-        self.client = client
-        self.max_tokens = max_tokens
-        self.compression_threshold = compression_threshold
-        self.fact_extractor = fact_extractor or FactExtractor(client)
-        self._current_context: list[dict] = []
-        self._token_count = 0
+    Args:
+        facts: Dictionary with extracted facts.
 
-    def add_message(self, role: str, content: str) -> None:
-        """Add a message to the context."""
-        self._current_context.append({
-            "role": role,
-            "content": content,
-        })
-        # Rough token estimate (4 chars per token)
-        self._token_count += len(content) // 4
+    Returns:
+        Formatted string with facts.
+    """
+    lines = []
 
-    def get_context(self) -> list[dict]:
-        """Get the current context."""
-        return self._current_context
+    if facts.get("errors"):
+        lines.append("Errors:")
+        for error in facts["errors"][:5]:  # Limit to 5 errors
+            lines.append(f"  - {error}")
 
-    def should_compress(self) -> bool:
-        """Check if compression is needed."""
-        return self._token_count > self.max_tokens * self.compression_threshold
+    if facts.get("facts"):
+        lines.append("Key Facts:")
+        for fact in facts["facts"][:10]:  # Limit to 10 facts
+            lines.append(f"  - {fact}")
 
-    def compress(self) -> list[dict]:
-        """Compress the context with fact preservation.
-        
-        Returns:
-            Compressed context as a list of messages.
-        """
-        if not self.should_compress():
-            return self._current_context
-        
-        logger.info("Compressing context (%d tokens, max %d)",
-                     self._token_count, self.max_tokens)
-        
-        # Phase 1: Extract facts from the oldest half of the conversation
-        half_point = len(self._current_context) // 2
-        old_turns = self._current_context[:half_point]
-        new_turns = self._current_context[half_point:]
-        
-        facts = self.fact_extractor.extract_facts(old_turns)
-        facts_text = self.fact_extractor.format_facts_for_context(facts)
-        
-        # Phase 2: Summarize old turns
-        summary = self._summarize_old_turns(old_turns)
-        
-        # Build compressed context
-        compressed_context = [
-            {"role": "system", "content": facts_text},
-            {"role": "system", "content": f"Summary of older conversation:\n{summary}"},
-        ] + new_turns
-        
-        # Update token count (rough estimate)
-        self._token_count = sum(len(msg["content"]) // 4 for msg in compressed_context)
-        self._current_context = compressed_context
-        
-        logger.info("Context compressed to %d tokens", self._token_count)
-        return compressed_context
+    if facts.get("decisions"):
+        lines.append("Decisions:")
+        for decision in facts["decisions"][:5]:
+            lines.append(f"  - {decision}")
 
-    def _summarize_old_turns(self, old_turns: list[dict]) -> str:
-        """Summarize old conversation turns."""
-        # Build conversation text
-        conversation_text = "\n".join([
-            f"{msg['role']}: {msg['content']}"
-            for msg in old_turns
-        ])
-        
-        # Build summarization prompt
-        prompt = f"""Summarize the following conversation, preserving key information:
+    return "\n".join(lines) if lines else ""
 
-{conversation_text}
 
-Provide a concise summary that captures:
-- What the user asked for
-- What the agent did
-- Any important results or outputs
+def compress_tool_output_with_facts(tool_name: str, tool_args: str, result: str,
+                                     model: str, client, session_id: str = "") -> str:
+    """Compress tool output with fact preservation.
 
-Keep the summary under 500 characters."""
-        
-        # Call LLM to summarize
-        response = self.client.send_message(prompt)
-        
-        return response
+    This is an enhanced version of compress_tool_output that first extracts
+    key facts from the output, then compresses the rest.
 
-    def reset(self) -> None:
-        """Reset the context."""
-        self._current_context = []
-        self._token_count = 0
-        logger.info("Context reset")
+    Args:
+        tool_name: Name of the tool that produced the output.
+        tool_args: Arguments passed to the tool.
+        result: The tool output.
+        model: Model name for LLM summarization.
+        client: LLM client for summarization.
+        session_id: Session ID for tracking.
+
+    Returns:
+        Compressed output with preserved facts.
+    """
+    in_len = len(result)
+
+    # If output is small, no compression needed
+    if in_len <= MAX_TOOL_OUTPUT_CHARS:
+        return result
+
+    # Extract facts first
+    facts = _extract_facts_from_tool_output(tool_name, tool_args, result)
+    facts_text = _format_facts(facts)
+
+    # If facts are significant, include them in the output
+    if facts_text and len(facts_text) < MAX_TOOL_OUTPUT_CHARS // 2:
+        # Compress the rest of the output
+        compressed = _head_tail(result, MAX_TOOL_OUTPUT_CHARS - len(facts_text) - 50, tool_name)
+        return f"{facts_text}\n\n{compressed}"
+
+    # Fall back to normal compression
+    return _head_tail(result, MAX_TOOL_OUTPUT_CHARS, tool_name)
 ```
 
 **What this does:**
-- Extends `compressor.py` with fact extraction logic.
-- Implements two-phase compression: fact extraction + summarization.
-- Preserves critical information during compression.
+- Adds rule-based fact extraction from tool outputs.
+- Extracts errors, file paths, line numbers, counts, and status codes.
+- Preserves extracted facts in the compressed output.
+- Falls back to normal compression if facts are not significant.
 
-### Step 3: Add Configuration Support
+---
 
-**File:** `nbchat/core/config.py`
+### Step 2: Integrate with the Existing Compressor
 
-This module is enhanced with compression configuration.
+**File:** `nbchat/core/compressor.py`
+
+Modify the `compress_tool_output` function to use the new fact preservation logic.
 
 ```python
-"""Configuration for context compression."""
-from __future__ import annotations
+# Modify the compress_tool_output function in compressor.py
 
-import logging
-from dataclasses import dataclass, field
-from typing import Optional
+def compress_tool_output(tool_name: str, tool_args: str, result: str,
+                         model: str, client, session_id: str = "") -> str:
+    """Compress tool output with optional fact preservation.
 
-logger = logging.getLogger(__name__)
+    Args:
+        tool_name: Name of the tool that produced the output.
+        tool_args: Arguments passed to the tool.
+        result: The tool output.
+        model: Model name for LLM summarization.
+        client: LLM client for summarization.
+        session_id: Session ID for tracking.
 
+    Returns:
+        Compressed output.
+    """
+    in_len = len(result)
+    if in_len <= MAX_TOOL_OUTPUT_CHARS:
+        _record(tool_name, in_len, in_len, "passthrough")
+        return result
 
-@dataclass
-class CompressionConfig:
-    """Configuration for context compression."""
-    max_tokens: int = 128000
-    compression_threshold: float = 0.8
-    fact_preservation_enabled: bool = True
-    max_fact_length: int = 500
-    summarization_model: str = "gpt-4"
+    # Use fact preservation for important tools
+    if tool_name in ("read_file", "cat", "view_file", "get_file"):
+        # For file reading tools, preserve file paths and content
+        return compress_tool_output_with_facts(tool_name, tool_args, result, model, client, session_id)
 
-    @classmethod
-    def from_dict(cls, data: dict) -> CompressionConfig:
-        """Create from dictionary (e.g., from YAML config)."""
-        return cls(
-            max_tokens=data.get("max_tokens", 128000),
-            compression_threshold=data.get("compression_threshold", 0.8),
-            fact_preservation_enabled=data.get("fact_preservation_enabled", True),
-            max_fact_length=data.get("max_fact_length", 500),
-            summarization_model=data.get("summarization_model", "gpt-4"),
+    # Use fact preservation for error outputs
+    if is_error_content(result):
+        return compress_tool_output_with_facts(tool_name, tool_args, result, model, client, session_id)
+
+    # Fall back to normal compression for other tools
+    state = _sess(session_id) if session_id else {"lossless": set(), "recent": deque()}
+    key = _key_arg(tool_args)
+
+    if tool_name in state["lossless"]:
+        out = _head_tail(result, MAX_TOOL_OUTPUT_CHARS, tool_name)
+        _record(tool_name, in_len, len(out), "lossless_headtail")
+        return out
+
+    if session_id and (tool_name, key) in state["recent"]:
+        state["lossless"].add(tool_name)
+        out = _head_tail(result, MAX_TOOL_OUTPUT_CHARS, tool_name)
+        _record(tool_name, in_len, len(out), "lossless_learned")
+        _log.debug("compress: %s(%r) repeated — marked lossless", tool_name, key[:40])
+        return out
+
+    if tool_name in FILE_READ_TOOLS:
+        ext = _file_ext(tool_args)
+        if ext in _STRUCTURED_EXTS:
+            sk = _syntax_skeleton(result, ext, MAX_TOOL_OUTPUT_CHARS)
+            if sk is not None:
+                if session_id:
+                    state["recent"].append((tool_name, key))
+                _record(tool_name, in_len, len(sk), f"syntax_{ext.lstrip('.')}")
+                return sk
+        out = _head_tail(result, MAX_TOOL_OUTPUT_CHARS, tool_name)
+        if session_id:
+            state["recent"].append((tool_name, key))
+        _record(tool_name, in_len, len(out), "headtail_file")
+        return out
+
+    if tool_name in COMMAND_TOOLS:
+        out = _head_tail(result, MAX_TOOL_OUTPUT_CHARS, tool_name)
+        if session_id:
+            state["recent"].append((tool_name, key))
+        _record(tool_name, in_len, len(out), "headtail_command")
+        return out
+
+    # LLM summarisation
+    truncated = result[:MAX_TOOL_OUTPUT_CHARS]
+    if in_len > MAX_TOOL_OUTPUT_CHARS:
+        truncated += f"\n[...{in_len - MAX_TOOL_OUTPUT_CHARS} chars truncated for compression...]"
+    prompt = (
+        f"Tool: {tool_name}\nArgs: {tool_args}\nOutput:\n{truncated}\n\n"
+        "Summarise concisely. Preserve: signatures, error messages/tracebacks verbatim, "
+        "file paths, line numbers, returned values. Omit: blank lines, boilerplate, repeated blocks.\n"
+        "If output is empty or a bare confirmation, respond exactly: NO_RELEVANT_OUTPUT\n"
+        "Write only the summary, no preamble."
+    )
+    try:
+        resp = client.chat.completions.create(
+            model=model, messages=[{"role": "user", "content": prompt}], max_tokens=MAX_TOOL_OUTPUT_CHARS,
         )
-
-    def to_dict(self) -> dict:
-        """Convert to dictionary."""
-        return {
-            "max_tokens": self.max_tokens,
-            "compression_threshold": self.compression_threshold,
-            "fact_preservation_enabled": self.fact_preservation_enabled,
-            "max_fact_length": self.max_fact_length,
-            "summarization_model": self.summarization_model,
-        }
+        out = resp.choices[0].message.content.strip()
+        if session_id:
+            state["recent"].append((tool_name, key))
+        _record(tool_name, in_len, len(out), "llm")
+        return out
+    except Exception as exc:
+        _log.debug("compress: LLM failed (%s), falling back to head+tail", exc)
+        out = _head_tail(result, MAX_TOOL_OUTPUT_CHARS, tool_name)
+        _record(tool_name, in_len, len(out), "headtail_llm_fallback")
+        return out
 ```
 
 **What this does:**
-- Allows fact preservation rules to be configured.
-- Provides configuration for compression settings.
+- Integrates fact preservation into the existing `compress_tool_output` function.
+- Uses fact preservation for file reading tools and error outputs.
+- Falls back to normal compression for other tools.
 
 ---
 
@@ -421,230 +337,60 @@ class CompressionConfig:
 
 ### 5.1 Unit Tests
 
-**File:** `tests/test_fact_extractor.py`
+**File:** `tests/test_fact_extraction.py`
 
 ```python
-"""Tests for FactExtractor."""
+"""Tests for fact extraction."""
 import pytest
-from nbchat.core.fact_extractor import FactExtractor, ExtractedFact
+from nbchat.core.compressor import _extract_facts_from_tool_output, _format_facts
 
 
-class MockClient:
-    """Mock LLM client for testing."""
-    def __init__(self, response: str):
-        self.response = response
+def test_extract_errors():
+    """Test error extraction from tool output."""
+    result = """
+Error: File not found: /path/to/file.txt
+Traceback (most recent call last):
+  File "script.py", line 10, in main
+    raise FileNotFoundError("File not found")
+"""
+    facts = _extract_facts_from_tool_output("bash", '{"cmd": "cat /path/to/file.txt"}', result)
+    assert len(facts["errors"]) > 0
 
-    def send_message(self, prompt: str, system_prompt: str = None) -> str:
-        return self.response
+
+def test_extract_file_paths():
+    """Test file path extraction from tool output."""
+    result = "Processing file /home/user/project/main.py on line 42"
+    facts = _extract_facts_from_tool_output("read_file", '{"path": "/home/user/project/main.py"}', result)
+    facts_text = _format_facts(facts)
+    assert "/home/user/project/main.py" in facts_text
 
 
-def test_extract_facts():
-    """Test fact extraction."""
-    client = MockClient('''
-    {
-      "tool_calls": [
-        {"tool": "file_reader", "input": "read file.txt", "output_summary": "File contains: Hello World"}
-      ],
-      "decisions": [
-        {"description": "Use file_reader to read file.txt", "reasoning": "Need to see file contents"}
-      ],
-      "facts": [
-        {"description": "The file contains 'Hello World'"}
-      ]
-    }
-    ''')
-    
-    extractor = FactExtractor(client)
-    conversation = [
-        {"role": "user", "content": "Read file.txt"},
-        {"role": "assistant", "content": "I'll use file_reader to read file.txt"},
-    ]
-    
-    facts = extractor.extract_facts(conversation)
-    
-    assert len(facts) == 3
-    assert facts[0].category == "tool_call"
-    assert facts[1].category == "decision"
-    assert facts[2].category == "fact"
+def test_extract_counts():
+    """Test count extraction from tool output."""
+    result = "Found 15 files in directory"
+    facts = _extract_facts_from_tool_output("list_files", '{"path": "/home/user/project"}', result)
+    facts_text = _format_facts(facts)
+    assert "15" in facts_text
 
 
 def test_format_facts():
-    """Test formatting facts for context."""
-    client = MockClient("[]")
-    extractor = FactExtractor(client)
-    
-    facts = [
-        ExtractedFact(
-            category="tool_call",
-            description="Tool call: file_reader",
-            details={"tool": "file_reader", "output_summary": "Hello World"},
-        ),
-        ExtractedFact(
-            category="decision",
-            description="Read file.txt",
-            details={"reasoning": "Need to see contents"},
-        ),
-    ]
-    
-    formatted = extractor.format_facts_for_context(facts)
-    
-    assert "PRESERVED FACTS" in formatted
-    assert "file_reader" in formatted
-    assert "Read file.txt" in formatted
+    """Test fact formatting."""
+    facts = {
+        "errors": ["Error: File not found"],
+        "facts": ["File: /path/to/file.txt", "Line: 42"],
+        "decisions": ["Decision: Use backup file"],
+    }
+    formatted = _format_facts(facts)
+    assert "Errors:" in formatted
+    assert "Key Facts:" in formatted
+    assert "Decisions:" in formatted
 
 
-def test_extract_facts_empty():
-    """Test fact extraction with empty conversation."""
-    client = MockClient("[]")
-    extractor = FactExtractor(client)
-    
-    facts = extractor.extract_facts([])
-    assert facts == []
-
-
-def test_extract_facts_invalid_json():
-    """Test fact extraction with invalid JSON."""
-    client = MockClient("Invalid JSON")
-    extractor = FactExtractor(client)
-    
-    conversation = [{"role": "user", "content": "Hello"}]
-    facts = extractor.extract_facts(conversation)
-    assert facts == []
-```
-
-**File:** `tests/test_compressor.py`
-
-```python
-"""Tests for ContextCompressor."""
-import pytest
-from nbchat.core.compressor import ContextCompressor
-
-
-class MockClient:
-    """Mock LLM client for testing."""
-    def __init__(self, response: str = "Summary of conversation..."):
-        self.response = response
-
-    def send_message(self, prompt: str, system_prompt: str = None) -> str:
-        return self.response
-
-
-def test_add_message():
-    """Test adding a message to the context."""
-    client = MockClient()
-    compressor = ContextCompressor(client, max_tokens=1000)
-    
-    compressor.add_message("user", "Hello")
-    compressor.add_message("assistant", "Hi there!")
-    
-    context = compressor.get_context()
-    assert len(context) == 2
-    assert context[0]["role"] == "user"
-    assert context[1]["role"] == "assistant"
-
-
-def test_should_compress():
-    """Test should_compress method."""
-    client = MockClient()
-    compressor = ContextCompressor(client, max_tokens=100, compression_threshold=0.8)
-    
-    # Add a short message
-    compressor.add_message("user", "Hi")
-    assert not compressor.should_compress()
-    
-    # Add a long message to exceed threshold
-    long_content = "x" * 100
-    compressor.add_message("user", long_content)
-    assert compressor.should_compress()
-
-
-def test_compress():
-    """Test compression."""
-    client = MockClient("Summary: User asked about weather.")
-    compressor = ContextCompressor(client, max_tokens=100, compression_threshold=0.5)
-    
-    # Add messages to exceed threshold
-    for i in range(10):
-        compressor.add_message("user", f"Message {i}")
-        compressor.add_message("assistant", f"Response {i}")
-    
-    compressed = compressor.compress()
-    
-    # Should have fewer messages than original
-    assert len(compressed) < 20
-    
-    # Should contain system messages with facts and summary
-    assert any(msg["role"] == "system" for msg in compressed)
-
-
-def test_reset():
-    """Test resetting the context."""
-    client = MockClient()
-    compressor = ContextCompressor(client)
-    
-    compressor.add_message("user", "Hello")
-    compressor.reset()
-    
-    assert compressor.get_context() == []
-    assert compressor._token_count == 0
-```
-
-### 5.2 Integration Test
-
-**File:** `tests/test_compression_e2e.py`
-
-```python
-"""End-to-end test for context compression."""
-import pytest
-from nbchat.core.compressor import ContextCompressor
-
-
-class MockClient:
-    """Mock LLM client for testing."""
-    def __init__(self):
-        self.calls = []
-
-    def send_message(self, prompt: str, system_prompt: str = None) -> str:
-        self.calls.append(prompt)
-        if "fact" in prompt.lower() or "extract" in prompt.lower():
-            return '''
-            {
-              "tool_calls": [],
-              "decisions": [{"description": "User asked for summary", "reasoning": "Need to summarize"}],
-              "facts": [{"description": "Conversation is about summarization"}]
-            }
-            '''
-        return "Summary: User asked for a summary of the conversation."
-
-
-@pytest.mark.asyncio
-async def test_e2e_compression():
-    """Test end-to-end compression with mock LLM."""
-    client = MockClient()
-    compressor = ContextCompressor(client, max_tokens=100, compression_threshold=0.5)
-    
-    # Add messages to exceed threshold
-    for i in range(10):
-        compressor.add_message("user", f"Message {i}")
-        compressor.add_message("assistant", f"Response {i}")
-    
-    # Compress
-    compressed = compressor.compress()
-    
-    # Verify compression happened
-    assert len(compressed) < 20
-    
-    # Verify facts were extracted
-    system_messages = [msg for msg in compressed if msg["role"] == "system"]
-    assert len(system_messages) >= 1
-    assert "PRESERVED FACTS" in system_messages[0]["content"]
-```
-
-### 5.3 Run Tests
-
-```bash
-cd nbchat
-python -m pytest tests/test_fact_extractor.py tests/test_compressor.py tests/test_compression_e2e.py -v
+def test_format_empty_facts():
+    """Test formatting empty facts."""
+    facts = {"errors": [], "facts": [], "decisions": []}
+    formatted = _format_facts(facts)
+    assert formatted == ""
 ```
 
 ---
@@ -653,79 +399,67 @@ python -m pytest tests/test_fact_extractor.py tests/test_compressor.py tests/tes
 
 ### 6.1 Basic Usage
 
+The fact preservation is automatically used by `compress_tool_output` for file reading tools and error outputs:
+
 ```python
-from nbchat.core.compressor import ContextCompressor
-from nbchat.core.client import ChatClient
-from nbchat.core.config import Config
+from nbchat.core.compressor import compress_tool_output
 
-# Load config
-config = Config("repo_config.yaml")
-
-# Create client
-client = ChatClient(config)
-
-# Create compressor
-compressor = ContextCompressor(
+# Compress tool output with fact preservation
+compressed = compress_tool_output(
+    tool_name="read_file",
+    tool_args='{"path": "/path/to/file.txt"}',
+    result=large_file_content,
+    model="qwen3.5-35b",
     client=client,
-    max_tokens=128000,
-    compression_threshold=0.8,
+    session_id="session_123",
 )
-
-# Add messages
-compressor.add_message("user", "Hello, how are you?")
-compressor.add_message("assistant", "I'm doing well, thank you!")
-
-# Check if compression is needed
-if compressor.should_compress():
-    compressed = compressor.compress()
-    context = compressor.get_context()
-else:
-    context = compressor.get_context()
-
-# Use context for next API call
-# response = client.send_message(context)
+print(compressed)
 ```
 
-### 6.2 Advanced Usage
+### 6.2 Monitoring Compression Performance
 
 ```python
-# Configure compression with custom settings
-from nbchat.core.config import CompressionConfig
+from nbchat.core.compressor import get_compression_stats
 
-compression_config = CompressionConfig(
-    max_tokens=64000,
-    compression_threshold=0.7,
-    fact_preservation_enabled=True,
-    max_fact_length=1000,
-)
-
-compressor = ContextCompressor(
-    client=client,
-    max_tokens=compression_config.max_tokens,
-    compression_threshold=compression_config.compression_threshold,
-)
+stats = get_compression_stats()
+for tool, tool_stats in stats.items():
+    print(f"{tool}: {tool_stats['compression_rate']:.2%} compression rate")
 ```
 
 ---
 
 ## 7. Common Pitfalls
 
-1. **Over-summarization:** Aggressive summarization may lose critical information. Start with conservative thresholds and adjust based on performance.
+1. **Over-extraction:** Rule-based fact extraction may extract too much or too little. Tune the extraction patterns based on your use case.
 
-2. **Fact extraction accuracy:** The LLM-based fact extraction may miss or misrepresent critical information. Use human-in-the-loop validation for fact extraction prompts.
+2. **Performance:** Fact extraction adds overhead to compression. For high-throughput scenarios, consider disabling fact extraction.
 
-3. **Token estimation:** The token estimation (4 chars per token) is rough. Use a more accurate tokenizer (e.g., `tiktoken`) for production.
+3. **Accuracy:** Rule-based extraction is not perfect. Critical facts may be missed. If this is a concern, consider LLM-based fact extraction.
 
-4. **Summarization quality:** The summarization prompt may produce poor results for certain types of conversations. Iterate on the prompt to improve quality.
+4. **Output size:** Preserving facts increases the output size. Ensure the compressed output still fits within the token budget.
 
-5. **Context window pressure:** Even after compression, the context may still exceed the window. Implement additional truncation if needed.
+5. **Maintenance:** Extraction patterns may need to be updated as tool outputs change. Keep the patterns up to date.
 
 ---
 
 ## 8. Success Criteria
 
 - [ ] All unit tests pass.
-- [ ] Integration test shows the compressor correctly compresses context.
-- [ ] Facts are correctly extracted and preserved during compression.
-- [ ] Summarization produces coherent results.
-- [ ] Compressed context fits within the token budget.
+- [ ] Fact extraction correctly identifies errors, file paths, and counts.
+- [ ] Compressed output includes preserved facts.
+- [ ] Compression rate is not significantly degraded.
+- [ ] No regression in existing compression functionality.
+
+---
+
+## Appendix: What NOT to Implement
+
+The following approaches were considered but rejected:
+
+1. **New `fact_extractor.py` module:** Adding a new module adds complexity. Keep fact extraction in `compressor.py` where it belongs.
+
+2. **LLM-based fact extraction:** LLM-based extraction adds an extra API call per compression. Use rule-based extraction for now.
+
+3. **Persistent fact store:** Storing extracted facts in a separate database adds complexity. Keep facts in the compressed output.
+
+4. **Separate compression pipeline:** Creating a separate compression pipeline for fact preservation adds complexity. Integrate fact preservation into the existing pipeline.
