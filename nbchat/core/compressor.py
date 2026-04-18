@@ -290,7 +290,7 @@ def compress_tool_output(tool_name: str, tool_args: str, result: str,
     )
     try:
         resp = client.chat.completions.create(
-            model=model, messages=[{"role": "user", "content": prompt}], max_tokens=MAX_TOOL_OUTPUT_CHARS,
+            model=model, messages=[{"role": "user", "content": prompt}], max_tokens=MAX_TOOL_OUTPUT_CHARS//2.5,
         )
         out = resp.choices[0].message.content.strip()
         if session_id:
