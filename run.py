@@ -25,8 +25,8 @@ from nbchat.core import config
 # --------------------------------------------------------------------------- #
 SERVICE_INFO = Path(config.SERVICE_INFO_PATH)
 LLAMA_LOG    = Path(config.LLAMA_LOG_PATH)
-RELEASE_REPO = f"{config.USER_NAME}/llamacpp_g4"
-# RELEASE_REPO = f"{config.USER_NAME}/llamacpp_t4_v2"
+# RELEASE_REPO = f"{config.USER_NAME}/llamacpp_g4"
+RELEASE_REPO = f"{config.USER_NAME}/llamacpp_t4"
 MODEL        = config.MODEL_NAME
 PORT         = config.PORT
 N_PARALLEL   = config.N_PARALLEL
