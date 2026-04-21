@@ -142,52 +142,55 @@ def main() -> None:
 
     # 2. Start llama-server
 
-    llama_cmd = [ ## G4
-        "./llama-server",
-        "-hf", MODEL,
-        "--port", str(PORT),
-        "--parallel", "1",
-        "--ctx-size", str(CTX_SIZE),
-        "--n-gpu-layers", "999",
-        "--flash-attn", "1",
-        "--batch-size", "2048",
-        "--ubatch-size", "512",
-        # "--cache-type-k", "q8_0",
-        # "--cache-type-v", "q8_0",
-        "--temp", "0.6",
-        "--top-p", "0.95",
-        "--top-k", "20",
-        "--min-p", "0.0",
-        "--repeat-penalty", "1.0",
-        "--reasoning", "on",
-        "--mmap",
-        "--mlock",
-        "--metrics",
-    ]
-    # llama_cmd = [ ## T4
+    # llama_cmd = [ ## G4
     #     "./llama-server",
     #     "-hf", MODEL,
     #     "--port", str(PORT),
-    #     "--parallel", str(N_PARALLEL),
+    #     "--parallel", "1",
     #     "--ctx-size", str(CTX_SIZE),
-    #     "--n-gpu-layers", str(N_GPU_LAYERS),
+    #     "--n-gpu-layers", "999",
     #     "--flash-attn", "1",
-    #     "--temp", "0.6", # 27B thinking
+    #     "--batch-size", "2048",
+    #     "--ubatch-size", "512",
+    #     # "--cache-type-k", "q8_0",
+    #     # "--cache-type-v", "q8_0",
+    #     "--temp", "0.6",
     #     "--top-p", "0.95",
     #     "--top-k", "20",
-    #     "--chat-template-kwargs", '{"enable_thinking": true}',
-    #     "--batch-size", "512",
-    #     "--ubatch-size", "512",
-    #     "--no-mmap",
+    #     "--min-p", "0.0",
+    #     "--repeat-penalty", "1.0",
+    #     "--reasoning", "on",
+    #     "--mmap",
     #     "--mlock",
     #     "--metrics",
-    #     # # Speculative decoding — draft on GPU!
-    #     # "-hfrd", "unsloth/Qwen3.5-0.8B-GGUF:IQ4_XS",
-    #     # "-ngld", "999",             # ← KEY FIX: put the 0.8B on GPU, it's ~300MB
-    #     # "--ctx-size-draft", "8192", # ← smaller draft ctx saves VRAM
-    #     # "--draft", "16",
-    #     # "--draft-p-min", "0.5",     # lower threshold for thinking-token uncertainty
     # ]
+    llama_cmd = [ ## T4
+        "./llama-server",
+        "-hf", MODEL,
+        "--port", str(PORT),
+        "--parallel", str(N_PARALLEL),
+        "--ctx-size", str(CTX_SIZE),
+        "--n-gpu-layers", str(N_GPU_LAYERS),
+        "--flash-attn", "1",
+        "--temp", "0.6", # 27B thinking
+        "--top-p", "0.95",
+        "--top-k", "20",
+        "--reasoning", "on",
+        # "--chat-template-kwargs", '{"enable_thinking": true}',
+        "--batch-size", "512",
+        "--ubatch-size", "512",
+        "--no-mmap",
+        "--no-mmproj", ## disable vision
+        "--repeat-penalty", "1.0",
+        "--mlock",
+        "--metrics",
+        # # Speculative decoding — draft on GPU!
+        # "-hfrd", "unsloth/Qwen3.5-0.8B-GGUF:IQ4_XS",
+        # "-ngld", "999",             # ← KEY FIX: put the 0.8B on GPU, it's ~300MB
+        # "--ctx-size-draft", "8192", # ← smaller draft ctx saves VRAM
+        # "--draft", "16",
+        # "--draft-p-min", "0.5",     # lower threshold for thinking-token uncertainty
+    ]
     pids["llama"] = _run_detached(llama_cmd, LLAMA_LOG, "llama-server")
 
     # # 3. Start WhatsApp Python Server
