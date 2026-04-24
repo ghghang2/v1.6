@@ -11901,3 +11901,93 @@ srv  update_slots: all slots are idle
 srv  update_slots: all slots are idle
 srv  update_slots: all slots are idle
 srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  params_from_: Chat format: peg-native
+slot get_availabl: id  0 | task -1 | selected slot by LCP similarity, sim_best = 0.995 (> 0.100 thold), f_keep = 0.994
+slot launch_slot_: id  0 | task -1 | sampler chain: logits -> ?penalties -> ?dry -> ?top-n-sigma -> top-k -> ?typical -> top-p -> ?min-p -> ?xtc -> temp-ext -> dist 
+slot launch_slot_: id  0 | task 94114 | processing task, is_child = 0
+slot update_slots: id  0 | task 94114 | new prompt, n_ctx_slot = 262144, n_keep = 0, task.n_tokens = 45190
+slot update_slots: id  0 | task 94114 | n_past = 44952, slot.prompt.tokens.size() = 45210, seq_id = 0, pos_min = 45209, n_swa = 0
+slot update_slots: id  0 | task 94114 | Checking checkpoint with [44948, 44948] against 44952...
+slot update_slots: id  0 | task 94114 | restored context checkpoint (pos_min = 44948, pos_max = 44948, n_tokens = 44949, n_past = 44949, size = 149.626 MiB)
+slot update_slots: id  0 | task 94114 | n_tokens = 44949, memory_seq_rm [44949, end)
+slot update_slots: id  0 | task 94114 | prompt processing progress, n_tokens = 45186, batch.n_tokens = 237, progress = 0.999911
+slot update_slots: id  0 | task 94114 | n_tokens = 45186, memory_seq_rm [45186, end)
+reasoning-budget: activated, budget=2147483647 tokens
+slot init_sampler: id  0 | task 94114 | init sampler, took 4.51 ms, tokens: text = 45190, total = 45190
+slot update_slots: id  0 | task 94114 | prompt processing done, n_tokens = 45190, batch.n_tokens = 4
+slot update_slots: id  0 | task 94114 | created context checkpoint 12 of 32 (pos_min = 45185, pos_max = 45185, n_tokens = 45186, size = 149.626 MiB)
+srv  log_server_r: done request: POST /v1/chat/completions 127.0.0.1 200
+reasoning-budget: deactivated (natural end)
+slot print_timing: id  0 | task 94114 | 
+prompt eval time =     145.58 ms /   241 tokens (    0.60 ms per token,  1655.48 tokens per second)
+       eval time =   13557.83 ms /   493 tokens (   27.50 ms per token,    36.36 tokens per second)
+      total time =   13703.40 ms /   734 tokens
+slot      release: id  0 | task 94114 | stop processing: n_tokens = 45682, truncated = 0
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
+srv  update_slots: all slots are idle
