@@ -777,6 +777,7 @@ Replaces traditional BJT-based sensors with **BEOL metal resistor** approach:
 
 #### Missing Context
 
+- **Production Timeline (Updated):** Samsung SF2 temperature sensor is taped out on SF2 process (same node as HBM4 logic base die). Integration into HBM4 base die is expected in **2026**, aligned with HBM4 volume production. The 625 μm² footprint is small enough for standard PDK inclusion; Samsung could make this a standard IP block for SF2 and future nodes in **2026-2027**.
 - **Resolution Trade-off:** Lower TCR limits sensing resolution. Quantitative resolution not provided.
 - **Calibration:** How often must the sensor be calibrated across process corners?
 - **Integration:** Will this become a standard PDK element across Samsung nodes?
