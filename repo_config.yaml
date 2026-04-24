@@ -9,7 +9,8 @@ SERVER_URL: "http://localhost:8000"
 # MODEL_NAME: "unsloth/gpt-oss-20b-GGUF:F16"
 # MODEL_NAME: "unsloth/Qwen3.5-9B-GGUF:Q8_0" #Q4_K_M, UD-Q5_K_XL, Q8_0(fails on tool calls...)
 # MODEL_NAME: "unsloth/Qwen3.5-27B-GGUF:UD-IQ3_XXS"
-MODEL_NAME: "unsloth/Qwen3.5-27B-GGUF:Q3_K_M"
+# MODEL_NAME: "unsloth/Qwen3.5-27B-GGUF:Q3_K_M"
+MODEL_NAME: "unsloth/Qwen3.6-27B-GGUF:UD-Q8_K_XL"
 # MODEL_NAME: "unsloth/Qwen3.5-35B-A3B-GGUF:UD-Q4_K_XL"
 # MODEL_NAME: "unsloth/Qwen3.6-35B-A3B-GGUF:UD-Q6_K_XL"
 # MODEL_NAME: "unsloth/gemma-4-26B-A4B-it-GGUF:UD-Q4_K_XL"
@@ -20,12 +21,12 @@ DEFAULT_SYSTEM_PROMPT: |
 user_name: "ghghang2"
 repo_name: "v1.6"
 tail_len: 10
-max_tool_output_chars: 16384
+max_tool_output_chars: 65536
 max_history_turns: 10
 
 port: 8000
-n_parallel: 1
-ctx_size: 16384
+n_parallel: 2
+ctx_size: 262144
 n_gpu_layers: 999
 service_info_path: "service_info.json"
 llama_log_path: "llama_server.log"
