@@ -172,17 +172,20 @@ def main() -> None:
         "--ctx-size", str(CTX_SIZE),
         "--n-gpu-layers", str(N_GPU_LAYERS),
         "--flash-attn", "1",
-        "--temp", "0.6", # 27B thinking
+        "--temp", "1.0", # 27B thinking
         "--top-p", "0.95",
         "--top-k", "20",
+        "--min-p", "0.0",
         "--reasoning", "on",
         # "--chat-template-kwargs", '{"enable_thinking": true}',
         "--batch-size", "512",
         "--ubatch-size", "512",
-        "--no-mmap",
+        # "--no-mmap",
         "--no-mmproj", ## disable vision
         "--repeat-penalty", "1.0",
-        "--mlock",
+        "--load-mode", "mlock",
+        # "--load-mode", "no-mmap",
+        # "--mlock",
         "--metrics",
         # # Speculative decoding — draft on GPU!
         # "-hfrd", "unsloth/Qwen3.5-0.8B-GGUF:IQ4_XS",
