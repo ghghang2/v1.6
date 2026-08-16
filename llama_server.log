@@ -188,3 +188,5 @@ Try increasing RLIMIT_MEMLOCK ('ulimit -l' as root).
 9.31.091.749 I slot      release: id  0 | task 3312 | stop processing: n_tokens = 2900, truncated = 0
 9.31.091.857 I slot get_availabl: id  0 | task -1 | selected slot by LRU, t_last = 5242951043
 9.31.976.455 I slot launch_slot_: id  0 | task 3313 | processing task, is_child = 0
+9.37.987.714 I slot print_timing: id  0 | task 3313 | prompt processing, n_tokens =   1838, progress = 0.94, t =   6.01 s / 306.03 tokens per second
+9.39.975.873 I slot print_timing: id  0 | task 3313 | prompt processing, n_tokens =   1954, progress = 1.00, t =   7.99 s / 244.43 tokens per second
