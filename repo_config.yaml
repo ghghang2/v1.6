@@ -27,7 +27,7 @@ max_history_turns: 10
 
 port: 8888
 n_parallel: 1
-ctx_size: 16384
+ctx_size: 32768
 n_gpu_layers: 999
 service_info_path: "service_info.json"
 llama_log_path: "llama_server.log"

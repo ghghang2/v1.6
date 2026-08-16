@@ -177,9 +177,9 @@ def main() -> None:
         "--top-k", "20",
         "--min-p", "0.0",
         "--reasoning", "on",
-        # "--chat-template-kwargs", '{"enable_thinking": true}',
-        "--batch-size", "512",
-        "--ubatch-size", "512",
+        "--chat-template-kwargs", '{"reasoning_effort": "xhigh"}',
+        "--batch-size", "1024",
+        "--ubatch-size", "1024",
         # "--no-mmap",
         "--no-mmproj", ## disable vision
         "--repeat-penalty", "1.0",
