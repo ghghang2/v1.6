@@ -185,6 +185,10 @@ def main() -> None:
         "--reasoning-preserve", 
         "--fit", "off", 
         "--agent",
+        "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0",
+        "--reasoning-budget", "4096",
+        "--reasoning-budget-message", "... I am thinking for too -- let me gather more info about the task."
         # "--no-mmap",
         "--no-mmproj", ## disable vision
         "--repeat-penalty", "1.0",
