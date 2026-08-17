@@ -238,13 +238,21 @@ class ContextMixin:
     def _update_l1_goal_from_user(self, user_message: str) -> None:
         try:
             lower = user_message.lower()
-            updates = {"goal": user_message[:300]}
+            updates: dict = {}
+            cm = db.get_core_memory(self.session_id) or {}
+            # The goal is the ORIGINAL user request. It must be pinned on the
+            # first user message and never overwritten, otherwise later turns
+            # (e.g. status chatter or corrections) silently replace the task
+            # the agent is actually working on.
+            if not cm.get("goal"):
+                updates["goal"] = user_message[:300]
             if any(
                 lower.startswith(kw) or f" {kw} " in lower or lower.endswith(f" {kw}")
                 for kw in _CORRECTION_KEYWORDS
             ):
                 updates["last_correction"] = user_message[:300]
-            db.update_core_memory(self.session_id, updates)
+            if updates:
+                db.update_core_memory(self.session_id, updates)
         except Exception as exc:
             _log.debug("_update_l1_goal_from_user failed: %s", exc)
 
