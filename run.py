@@ -180,6 +180,11 @@ def main() -> None:
         "--chat-template-kwargs", '{"reasoning_effort": "xhigh"}',
         "--batch-size", "1024",
         "--ubatch-size", "1024",
+        "--spec-default",
+        "--spec-type", "draft-mtp",
+        "--reasoning-preserve", 
+        "--fit", "off", 
+        "--agent",
         # "--no-mmap",
         "--no-mmproj", ## disable vision
         "--repeat-penalty", "1.0",
