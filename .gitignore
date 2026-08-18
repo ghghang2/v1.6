@@ -10,3 +10,5 @@ __pycache__
 *.db
 chat_history.db
 *.out
+*.ipynb
+*.ipynb
