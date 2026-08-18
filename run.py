@@ -26,7 +26,7 @@ from nbchat.core import config
 SERVICE_INFO = Path(config.SERVICE_INFO_PATH)
 LLAMA_LOG    = Path(config.LLAMA_LOG_PATH)
 # RELEASE_REPO = f"{config.USER_NAME}/llamacpp_g4"
-RELEASE_REPO = f"{config.USER_NAME}/llamacpp_t4"
+RELEASE_REPO = f"{config.USER_NAME}/llamacpp_l40s"
 MODEL        = config.MODEL_NAME
 PORT         = config.PORT
 N_PARALLEL   = config.N_PARALLEL
@@ -132,10 +132,10 @@ def main() -> None:
         sys.exit(f"[ERROR] Port {PORT} is already in use")
 
     # 1. Binary Setup
-    _run_blocking(
-        f"gh release download --repo {RELEASE_REPO} --pattern llama-server --skip-existing",
-        extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
-    )
+    # _run_blocking(
+    #     f"gh release download --repo {RELEASE_REPO} --pattern llama-server",
+    #     extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
+    # )
     _run_blocking("chmod +x ./llama-server")
 
     pids = {}
@@ -178,15 +178,15 @@ def main() -> None:
         "--min-p", "0.0",
         "--reasoning", "on",
         "--chat-template-kwargs", '{"reasoning_effort": "xhigh"}',
-        "--batch-size", "1024",
-        "--ubatch-size", "1024",
+        # "--batch-size", "1024",
+        # "--ubatch-size", "1024",
         "--spec-default",
         "--spec-type", "draft-mtp",
         "--reasoning-preserve", 
         "--fit", "off", 
         "--agent",
-        "--cache-type-k", "q8_0",
-        "--cache-type-v", "q8_0",
+        # "--cache-type-k", "q8_0",
+        # "--cache-type-v", "q8_0",
         "--reasoning-budget", "4096",
         "--reasoning-budget-message", "... I am thinking for too -- let me gather more info about the task."
         # "--no-mmap",
@@ -231,7 +231,7 @@ def main() -> None:
     # 5. Environment Setup
     print("Installing remaining dependencies...")
     _run_blocking("pip install -r requirements.txt -qqq")
-    _run_blocking("sudo apt-get update -qq && sudo apt-get install -y libxcomposite1 libgtk-3-0 libatk1.0-0")
+    _run_blocking("apt install -y libxcomposite1 libgtk-3-0 libatk1.0-0")
     _run_blocking("playwright install --with-deps chromium")
 
     # 6. Final health check
