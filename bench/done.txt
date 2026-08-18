@@ -1,0 +1,17 @@
+pp_fa_on_ct_f16
+pp_fa_on_ct_q8_0
+pp_fa_off_ct_f16
+pp_fa_off_ct_f16
+pp_fa_off_ct_q8_0
+pp_fa_off_ct_q8_0
+tg_fa_on_ct_f16
+tg_fa_on_ct_f16
+tg_fa_on_ct_q8_0
+tg_fa_on_ct_q8_0
+tg_fa_on_ct_q8_0
+tg_fa_off_ct_f16
+tg_fa_off_ct_f16
+tg_fa_off_ct_f16
+tg_fa_off_ct_q8_0
+tg_fa_off_ct_q8_0
+tg_fa_off_ct_q8_0
