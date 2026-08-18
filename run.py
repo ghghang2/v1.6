@@ -164,7 +164,7 @@ def main() -> None:
     #     "--mlock",
     #     "--metrics",
     # ]
-    llama_cmd = [ ## T4
+    llama_cmd = [ ## L40S
         "./llama-server",
         "-hf", MODEL,
         "--port", str(PORT),
@@ -178,8 +178,8 @@ def main() -> None:
         "--min-p", "0.0",
         "--reasoning", "on",
         "--chat-template-kwargs", '{"reasoning_effort": "xhigh"}',
-        # "--batch-size", "1024",
-        # "--ubatch-size", "1024",
+        "--batch-size", "4096",
+        "--ubatch-size", "2048",
         "--spec-default",
         "--spec-type", "draft-mtp",
         "--reasoning-preserve", 
