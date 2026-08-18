@@ -42,6 +42,7 @@ IGNORED_ITEMS:
   - "*.json"
   - "*.out"
   - "*.db"
+  - "*.ipynb"
 
 SUMMARY_PROMPT: |
   Write a detailed summary of the conversation above.
