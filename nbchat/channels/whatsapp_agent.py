@@ -17,9 +17,11 @@ Usage
 from __future__ import annotations
 
 import logging
+import threading
 from typing import List, Tuple
 
 from nbchat.core.utils import lazy_import
+from nbchat.ui.context_manager import ImportanceTracker
 from nbchat.ui.context_manager import ContextMixin
 from nbchat.ui.conversation import ConversationMixin
 
@@ -46,7 +48,9 @@ class WhatsAppAgent(ContextMixin, ConversationMixin):
 
     config = lazy_import("nbchat.core.config")
     MAX_TOOL_TURNS = config.MAX_TOOL_TURNS
-    WINDOW_TURNS = config.WINDOW_TURNS
+    # NOTE: WINDOW_TURNS was removed from config (config.py __all__ and
+    # repo_config.yaml) but was still referenced here at import time, which
+    # crashed the whole module with AttributeError. Removed.
 
     def __init__(self):
         db = lazy_import("nbchat.core.db")
@@ -61,6 +65,14 @@ class WhatsAppAgent(ContextMixin, ConversationMixin):
         self.history: List[Tuple[str, str, str, str, str, int]] = []
         self.task_log: List[str] = []
         self._turn_summary_cache: dict = {}
+        self._summary_futures: dict = {}
+        # ContextMixin._window() / _hard_trim() require an ImportanceTracker
+        # and a stop event + history lock (mirrors ChatUI's thread primitives).
+        self._importance_tracker = ImportanceTracker(
+            persist_fraction=config.PERSIST_FRACTION
+        )
+        self._stop_event = threading.Event()
+        self._history_lock = threading.Lock()
 
         self._stop_streaming = False
         self._tool_running = False

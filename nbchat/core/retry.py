@@ -32,6 +32,7 @@ DEFAULT_BACKOFF_MULTIPLIER = 2.0
 # Error types that should be retried
 RETRIFIABLE_ERRORS = (
     "timeout",
+    "timed out",
     "connection",
     "network",
     "temporarily",
@@ -57,6 +58,10 @@ NON_RETRIFIABLE_ERRORS = (
 )
 
 
+class NonRetryableError(Exception):
+    """Deterministic failure — skip retry and propagate immediately."""
+
+
 def _is_retryable(error_message: str) -> bool:
     """Check if an error is retryable based on error message."""
     error_lower = error_message.lower()
@@ -71,8 +76,12 @@ def _is_retryable(error_message: str) -> bool:
         if pattern in error_lower:
             return True
     
-    # Default: retry transient errors
-    return True
+    # Default: do NOT retry.  Unknown errors are usually deterministic
+    # (bad input, missing selector, 4xx); retrying them with exponential
+    # backoff only adds seconds to minutes of dead wall time, which this
+    # harness is built to avoid.  Only clearly transient failures above
+    # are retried.
+    return False
 
 
 def _calculate_delay(attempt: int, initial_delay: float, max_delay: float, 
@@ -115,6 +124,8 @@ def retry(
                 return func(*args, **kwargs)
             except Exception as e:
                 last_error = e
+                if isinstance(e, NonRetryableError):
+                    raise
                 error_msg = str(e).lower()
                 
                 if not _is_retryable(error_msg):
@@ -177,6 +188,8 @@ def retry_with_backoff(
             return func(*args, **kwargs)
         except Exception as e:
             last_error = e
+            if isinstance(e, NonRetryableError):
+                raise
             error_msg = str(e).lower()
             
             if not _is_retryable(error_msg):
@@ -202,4 +215,9 @@ def retry_with_backoff(
     raise last_error  # type: ignore
 
 
-__all__ = ["retry", "retry_with_backoff", "DEFAULT_MAX_RETRIES"]
+__all__ = [
+    "retry",
+    "retry_with_backoff",
+    "NonRetryableError",
+    "DEFAULT_MAX_RETRIES",
+]

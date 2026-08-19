@@ -229,6 +229,12 @@ class ConversationMixin:
                 if self._stop_event.is_set():
                     stream.close()
                     break
+                # With stream_options.include_usage (set by MetricsLoggingClient),
+                # the final chunk carries usage and has an EMPTY choices list.
+                # Indexing choices[0] there raised IndexError and killed the
+                # whole agentic loop on every turn.
+                if not chunk.choices:
+                    continue
                 choice = chunk.choices[0]
                 if choice.finish_reason:
                     finish_reason = choice.finish_reason

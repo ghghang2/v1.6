@@ -26,7 +26,7 @@ from nbchat.core import config
 SERVICE_INFO = Path(config.SERVICE_INFO_PATH)
 LLAMA_LOG    = Path(config.LLAMA_LOG_PATH)
 # RELEASE_REPO = f"{config.USER_NAME}/llamacpp_g4"
-RELEASE_REPO = f"{config.USER_NAME}/llamacpp_l40s"
+RELEASE_REPO = f"{config.USER_NAME}/llamacpp_b200"
 MODEL        = config.MODEL_NAME
 PORT         = config.PORT
 N_PARALLEL   = config.N_PARALLEL
@@ -132,10 +132,10 @@ def main() -> None:
         sys.exit(f"[ERROR] Port {PORT} is already in use")
 
     # 1. Binary Setup
-    # _run_blocking(
-    #     f"gh release download --repo {RELEASE_REPO} --pattern llama-server",
-    #     extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
-    # )
+    _run_blocking(
+        f"gh release download --repo {RELEASE_REPO} --pattern llama-server",
+        extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
+    )
     _run_blocking("chmod +x ./llama-server")
 
     pids = {}
@@ -164,7 +164,7 @@ def main() -> None:
     #     "--mlock",
     #     "--metrics",
     # ]
-    llama_cmd = [ ## L40S
+    llama_cmd = [ ## B200
         "./llama-server",
         "-hf", MODEL,
         "--port", str(PORT),
