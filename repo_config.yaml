@@ -24,9 +24,13 @@ repo_name: "v1.6"
 tail_len: 10
 max_tool_output_chars: 32768
 max_history_turns: 10
+# Max completion tokens per LLM call.  Must be a real token count (not a
+# char count) or llama.cpp silently truncates the output mid-tool-call,
+# causing the agent to stop prematurely.
+max_llm_output_tokens: 8192
 
 port: 8889
-n_parallel: 1
+n_parallel: 2
 ctx_size: 262144
 n_gpu_layers: 999
 service_info_path: "service_info.json"
@@ -97,6 +101,9 @@ high_invalidation_threshold: 0.30
 
 # Email parameters
 smtp_port: 587
+# Email bridge (TUI) — poll the Gmail inbox and inject replies into the chat
+email_poll_interval: 10      # seconds between IMAP polls when --email is on
+email_auto_reply: true       # send the agent's reply back to the sender
 
 # UI parameters
 max_visible_widgets: 20

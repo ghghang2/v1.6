@@ -102,6 +102,44 @@ class ConversationMixin:
                 db.log_message(self.session_id, "analysis", reasoning)
 
             if not tool_calls or finish_reason != "tool_calls":
+                # Truncation guard: if the model ran out of output tokens
+                # mid-reply (finish_reason == "length" or content ends with
+                # a colon/ellipsis that suggests an unfinished sentence),
+                # do NOT treat it as a final answer.  Log the event and
+                # inject a nudge so the model continues.
+                _tail = (content or "").rstrip()
+                # A reply that ends on an "incomplete" marker was almost
+                # certainly cut off mid-sentence (or mid-tool-call).  Heuristics
+                # below catch the common cases without tripping on real answers.
+                _ends_unfinished = bool(_tail) and _tail.endswith((
+                    ":", "\u2026", "...", " (", " [", " —",
+                    ", and", ", the", ", that", ", it",
+                    " then", " now", " let", " i will",
+                ))
+                _truncated = (finish_reason == "length") or _ends_unfinished
+                if _truncated and turn < self.MAX_TOOL_TURNS:
+                    _log.warning(
+                        "Possible truncation detected (finish_reason=%s, content_tail=%r). "
+                        "Injecting continue nudge instead of stopping.",
+                        finish_reason, (content or "")[-80:],
+                    )
+                    nudge = (
+                        "Your previous reply appears to have been cut off mid-sentence "
+                        "(likely due to the output token limit). Please continue from "
+                        "exactly where you left off. Do NOT repeat the content you already "
+                        "output. If you were about to call a tool, call it now."
+                    )
+                    self._on_agent_message(nudge)
+                    with self._history_lock:
+                        self.history.append(("assistant", content or "", "", "", "", 0))
+                    db.log_message(self.session_id, "assistant", content or "")
+                    with self._history_lock:
+                        self.history.append(("user", nudge, "", "", "", 0))
+                    db.log_message(self.session_id, "user", nudge)
+                    messages.append({"role": "assistant", "content": content or None})
+                    messages.append({"role": "user", "content": nudge})
+                    continue  # next turn of the loop
+
                 if content:
                     with self._history_lock:
                         self.history.append(("assistant", content, "", "", "", 0))
@@ -223,7 +261,7 @@ class ConversationMixin:
         try:
             stream = client.chat.completions.create(
                 model=self.model_name, messages=messages, stream=True,
-                tools=tools_mod.get_tools(), max_tokens=config.MAX_TOOL_OUTPUT_CHARS,
+                tools=tools_mod.get_tools(), max_tokens=config.MAX_LLM_OUTPUT_TOKENS,
             )
             for chunk in stream:
                 if self._stop_event.is_set():

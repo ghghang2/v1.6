@@ -63,6 +63,9 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         self._stop_event = threading.Event()
         self._history_lock = threading.Lock()
         self._tool_running = False
+        # Serializes conversation turns so a terminal send and an injected
+        # email turn never run the LLM loop concurrently (shared history).
+        self._send_lock = threading.Lock()
 
         # Streaming / capture state (reset between LLM calls).
         self._reasoning_printed = ""
@@ -137,12 +140,33 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         thread: ``KeyboardInterrupt`` (Ctrl+C) propagates so the caller can
         interrupt streaming.
         """
+        with self._send_lock:
+            return self._run_turn(text, self._print_user)
+
+    def send_from_email(self, sender: str, subject: str, body: str) -> str:
+        """Inject an inbound email into the chat as a user turn.
+
+        The email is composed into a clearly-labelled user message so the
+        model treats it as a normal user interjection, streamed through the
+        same agentic loop as a terminal message.  Returns the agent's reply
+        text (the caller may choose to send it back by email).
+        """
+        text = (
+            f"[Email message from {sender}]\n"
+            f"Subject: {subject}\n\n"
+            f"{body}"
+        )
+        with self._send_lock:
+            return self._run_turn(text, lambda t: self._print_mail(sender, subject, t))
+
+    def _run_turn(self, text: str, printer) -> str:
+        """Core turn: append + persist + print + run the agentic loop."""
         self._last_response = ""
         self._stop_event.clear()
 
         self.history.append(("user", text, "", "", "", 0))
         db.log_message(self.session_id, "user", text)
-        self._print_user(text)
+        printer(text)
 
         self._process_conversation_turn()
         return self._last_response
@@ -153,6 +177,17 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         p = self.palette
         sys.stdout.write(p.green("You: ") + "\n")
         for line in text.splitlines() or [""]:
+            sys.stdout.write("  " + line + "\n")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def _print_mail(self, sender: str, subject: str, text: str) -> None:
+        p = self.palette
+        sys.stdout.write(p.magenta(f"✉ Email {p.bold(sender)}")
+                         + p.gray(f" — {subject}") + "\n")
+        for line in text.splitlines():
+            if line.startswith("[Email message from") or line.startswith("Subject:"):
+                continue
             sys.stdout.write("  " + line + "\n")
         sys.stdout.write("\n")
         sys.stdout.flush()

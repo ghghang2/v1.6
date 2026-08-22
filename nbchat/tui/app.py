@@ -44,6 +44,7 @@ Tips
   • Type a normal message and press Enter to chat; the reply streams in live.
   • End a line with a backslash ( \\ ) to continue on the next line.
   • Press Ctrl+C while a reply is streaming to interrupt it.
+  • Start with --email to also receive Gmail replies in this chat.
 """
 
 
@@ -161,6 +162,12 @@ def run(argv: list[str] | None = None) -> int:
                         help="disable ANSI colours")
     parser.add_argument("--check", action="store_true",
                         help="check the llama-server is reachable, then exit")
+    parser.add_argument("--email", action="store_true",
+                        help="poll the Gmail inbox and inject replies into "
+                             "the chat (extends the input box to email)")
+    parser.add_argument("--no-auto-reply", action="store_true",
+                        help="with --email: do NOT email the agent's reply "
+                             "back to the sender")
     args = parser.parse_args(argv)
 
     up = server_ok()
@@ -180,6 +187,26 @@ def run(argv: list[str] | None = None) -> int:
     agent.remember_session(agent.session_id)
 
     print_banner(agent, up)
+
+    # Email bridge: pipe the Gmail inbox into the chat stream.
+    bridge = None
+    if args.email:
+        import os
+        if not os.getenv("GHG_APP_PASSWORD"):
+            print(agent.palette.yellow(
+                "  ! --email requested but GHG_APP_PASSWORD is not set; "
+                "email bridge disabled."))
+        else:
+            from nbchat.tui.email_bridge import EmailBridge
+            bridge = EmailBridge(
+                agent,
+                auto_reply=not args.no_auto_reply,
+            )
+            bridge.start()
+            p = agent.palette
+            print(p.magenta("  email   ") + "inbox bridge ACTIVE "
+                  f"(poll every {bridge._poll_interval}s, "
+                  f"auto-reply: {bridge._auto_reply})")
 
     prompt = agent.palette.cyan("❯ ")
     while True:
@@ -205,4 +232,6 @@ def run(argv: list[str] | None = None) -> int:
             agent._stop_event.set()
             print("\n" + agent.palette.yellow("[interrupted]"))
 
+    if bridge is not None:
+        bridge.stop()
     return 0

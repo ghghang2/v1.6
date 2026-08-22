@@ -1,0 +1,158 @@
+"""IMAP inbox polling for nbchat.
+
+Fetches unseen messages from the Gmail inbox so the TUI email bridge can
+inject them into the chat stream as user interjections.
+
+Only uses the standard library (``imaplib`` + ``email``) — no extra deps.
+"""
+from __future__ import annotations
+
+import email
+import email.header
+import email.utils
+import imaplib
+from dataclasses import dataclass
+from datetime import datetime, timezone
+
+
+@dataclass
+class EmailMessage:
+    """One decoded inbound email."""
+    message_id: str
+    from_addr: str
+    subject: str
+    body: str
+    date: datetime | None
+    uid: str  # IMAP UID (used to mark as read)
+
+
+def _decode_header(value: str) -> str:
+    """Decode a possibly-encoded RFC 2047 header value."""
+    parts = email.header.decode_header(value or "")
+    out: list[str] = []
+    for text, charset in parts:
+        if isinstance(text, bytes):
+            try:
+                out.append(text.decode(charset or "utf-8", errors="replace"))
+            except (LookupError, UnicodeDecodeError):
+                out.append(text.decode("utf-8", errors="replace"))
+        else:
+            out.append(text)
+    return "".join(out).strip()
+
+
+def _extract_body(msg: email.message.Message) -> str:
+    """Return a plain-text representation of the message body.
+
+    Prefers text/plain; falls back to text/html (stripped) when no plain
+    part is present.  Handles multipart messages.
+    """
+    plain: list[str] = []
+    html: list[str] = []
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = (part.get_content_type() or "").lower()
+            disp = (part.get("Content-Disposition") or "").lower()
+            if "attachment" in disp:
+                continue
+            if ctype == "text/plain":
+                plain.append(part.get_payload(decode=True) and
+                             part.get_payload(decode=True).decode(
+                                 part.get_content_charset() or "utf-8",
+                                 errors="replace") or "")
+            elif ctype == "text/html":
+                html.append(part.get_payload(decode=True) and
+                            part.get_payload(decode=True).decode(
+                                part.get_content_charset() or "utf-8",
+                                errors="replace") or "")
+    else:
+        payload = msg.get_payload(decode=True)
+        if payload:
+            text = payload.decode(msg.get_content_charset() or "utf-8",
+                                  errors="replace")
+            if (msg.get_content_type() or "").lower() == "text/html":
+                html.append(text)
+            else:
+                plain.append(text)
+    body = "\n".join(p for p in plain if p.strip())
+    if not body.strip() and html:
+        # Very light HTML → text fallback (strip tags).
+        import re
+        body = re.sub(r"<[^>]+>", " ", html[0])
+        body = re.sub(r"\s+", " ", body).strip()
+    return body.strip()
+
+
+def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
+    """Connect to Gmail and return up to *limit* UNSEEN messages.
+
+    The mailbox is opened read-only and **not** marked read here — the
+    caller decides when to mark messages read (after successful injection
+    into the chat) so a crash doesn't lose emails.
+    """
+    import os
+    pw = os.getenv("GHG_APP_PASSWORD")
+    if not pw:
+        raise RuntimeError("GHG_APP_PASSWORD env variable not set")
+
+    host = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+    try:
+        host.login("ghghang2@gmail.com", pw)
+        status, _ = host.select(box, readonly=True)
+        if status != "OK":
+            raise RuntimeError(f"IMAP SELECT failed for {box!r}: {status}")
+
+        status, data = host.search(None, "UNSEEN")
+        if status != "OK":
+            raise RuntimeError(f"IMAP SEARCH failed: {status}")
+        ids = data[0].split()
+        if not ids:
+            return []
+
+        results: list[EmailMessage] = []
+        # Fetch the newest *limit* messages.
+        for uid in ids[-limit:]:
+            status, fetched = host.fetch(uid, "(RFC822)")
+            if status != "OK" or not fetched:
+                continue
+            raw = fetched[0][1]
+            msg = email.message_from_bytes(raw)
+            results.append(EmailMessage(
+                message_id=msg.get("Message-ID", f"<{uid}@gmail.com>"),
+                from_addr=_decode_header(msg.get("From", "")),
+                subject=_decode_header(msg.get("Subject", "(no subject)")),
+                body=_extract_body(msg),
+                date=email.utils.parsedate_to_datetime(msg.get("Date"))
+                if msg.get("Date") else None,
+                uid=uid.decode() if isinstance(uid, bytes) else str(uid),
+            ))
+        # Keep chronological order (oldest first) for natural injection.
+        results.sort(key=lambda e: e.date or datetime.min.replace(tzinfo=timezone.utc))
+        return results
+    finally:
+        try:
+            host.logout()
+        except Exception:
+            pass
+
+
+def mark_read(uid: str, box: str = "INBOX") -> None:
+    """Mark a single message (by UID) as SEEN.
+
+    Done after the email has been successfully injected into the chat, so a
+    crash before this point does not silently discard the message.
+    """
+    import os
+    pw = os.getenv("GHG_APP_PASSWORD")
+    if not pw:
+        raise RuntimeError("GHG_APP_PASSWORD env variable not set")
+    host = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+    try:
+        host.login("ghghang2@gmail.com", pw)
+        host.select(box)
+        host.uid("STORE", uid, "+FLAGS", "\\Seen")
+    finally:
+        try:
+            host.logout()
+        except Exception:
+            pass

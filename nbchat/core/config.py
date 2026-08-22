@@ -51,6 +51,8 @@ REPO_NAME: str = str(_cfg["repo_name"])
 TAIL_MESSAGES: int = int(_cfg["tail_len"])
 MAX_TOOL_OUTPUT_CHARS: int = int(_cfg["max_tool_output_chars"])
 MAX_HISTORY_TURNS: int = int(_cfg["max_history_turns"])
+# Real token budget for LLM completions (not a char count).
+MAX_LLM_OUTPUT_TOKENS: int = int(_cfg.get("max_llm_output_tokens", 8192))
 
 # Conversation loop constants
 MAX_TOOL_TURNS: int = int(_cfg["max_tool_turns"])
@@ -100,6 +102,8 @@ _HIGH_INVALIDATION_THRESHOLD: float = float(_cfg["high_invalidation_threshold"])
 
 # Email parameters
 SMTP_PORT: int = int(_cfg["smtp_port"])
+EMAIL_POLL_INTERVAL: int = int(_cfg.get("email_poll_interval", 10))
+EMAIL_AUTO_REPLY: bool = bool(_cfg.get("email_auto_reply", True))
 
 # UI parameters
 MAX_VISIBLE_WIDGETS: int = int(_cfg["max_visible_widgets"])
@@ -124,6 +128,7 @@ __all__ = [
     "CONTEXT_TOKEN_THRESHOLD",
     "TAIL_MESSAGES",
     "MAX_TOOL_OUTPUT_CHARS",
+    "MAX_LLM_OUTPUT_TOKENS",
     "MAX_HISTORY_TURNS",
     # "WINDOW_TURNS",
     # "MAX_WINDOW_ROWS",
@@ -168,6 +173,8 @@ __all__ = [
     "_HIGH_INVALIDATION_THRESHOLD",
     # Email parameters
     "SMTP_PORT",
+    "EMAIL_POLL_INTERVAL",
+    "EMAIL_AUTO_REPLY",
     # UI parameters
     "MAX_VISIBLE_WIDGETS",
     # Timeout parameters
