@@ -18,7 +18,7 @@ def _password() -> str:
     pw = os.getenv("GHG_APP_PASSWORD")
     if not pw:
         raise RuntimeError("GHG_APP_PASSWORD env variable not set")
-    return pw
+    return pw.strip()
 
 
 def send(to: str, subject: str, body: str) -> str:
