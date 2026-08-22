@@ -102,7 +102,12 @@ def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
         if status != "OK":
             raise RuntimeError(f"IMAP SELECT failed for {box!r}: {status}")
 
-        status, data = host.search(None, "UNSEEN")
+        # Use UID search so we get stable UIDs (not sequence numbers).
+        # host.search() returns sequence numbers that shift when messages
+        # are added/removed; host.uid("search", ...) returns immutable UIDs
+        # that persist across connections.  mark_read() uses the UID STORE
+        # command, so the values passed to it must be real UIDs.
+        status, data = host.uid("SEARCH", None, "UNSEEN")
         if status != "OK":
             raise RuntimeError(f"IMAP SEARCH failed: {status}")
         ids = data[0].split()
@@ -112,7 +117,7 @@ def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
         results: list[EmailMessage] = []
         # Fetch the newest *limit* messages.
         for uid in ids[-limit:]:
-            status, fetched = host.fetch(uid, "(RFC822)")
+            status, fetched = host.uid("FETCH", uid, "(RFC822)")
             if status != "OK" or not fetched:
                 continue
             raw = fetched[0][1]
