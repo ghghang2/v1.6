@@ -1,0 +1,208 @@
+"""Terminal REPL for nbchat.
+
+Run with a single command:
+
+    python -m nbchat.tui          # or: python nbchat_tui.py
+
+Options:
+    --new         Force a brand-new session (skip resuming the last one).
+    --session S   Resume a specific session id (see /sessions).
+    --no-color    Disable ANSI colours.
+    --check       Only check the llama-server is reachable, then exit.
+
+The REPL reuses the full agent stack (memory, context windowing, tools,
+streaming).  It talks to the local llama-server configured in
+``repo_config.yaml`` (``SERVER_URL``).  If the server is not running it will
+still start, but LLM calls will fail until you run ``python run.py``.
+"""
+from __future__ import annotations
+
+import argparse
+import sys
+import urllib.request
+
+from nbchat.core import config
+from nbchat.tui.agent import TerminalAgent
+
+_BANNER = """
+  ┌──────────────────────────────────────────────┐
+  │  n b c h a t  ·  terminal  chat               │
+  └──────────────────────────────────────────────┘
+"""
+
+_HELP = """Commands
+  /help              Show this help.
+  /new               Start a new session.
+  /sessions          List terminal sessions (id prefix 'tui:').
+  /load <id>         Load one of the sessions from /sessions.
+  /history           Print the current session's message history.
+  /model             Show the active model and server.
+  /clear             Clear the screen.
+  /quit              Exit (Ctrl+C / Ctrl+D also work).
+
+Tips
+  • Type a normal message and press Enter to chat; the reply streams in live.
+  • End a line with a backslash ( \\ ) to continue on the next line.
+  • Press Ctrl+C while a reply is streaming to interrupt it.
+"""
+
+
+# ── Server health ──────────────────────────────────────────────────────────
+
+def server_ok() -> bool:
+    try:
+        with urllib.request.urlopen(f"{config.SERVER_URL}/health", timeout=3) as r:
+            return r.status == 200
+    except Exception:
+        return False
+
+
+# ── Banner / startup ───────────────────────────────────────────────────────
+
+def print_banner(agent: TerminalAgent, server_up: bool) -> None:
+    p = agent.palette
+    print(p.cyan(_BANNER.strip()))
+    print(f"  {p.gray('model   ')} {agent.model_name}")
+    print(f"  {p.gray('server  ')} {config.SERVER_URL} "
+          f"{p.green('[up]') if server_up else p.red('[down]')}")
+    print(f"  {p.gray('session ')} {agent.session_id}")
+    print(f"  {p.gray('help    ')} type /help for commands")
+    if not server_up:
+        print(p.yellow("  ! llama-server is not reachable — LLM calls will fail "
+                       "until you run: python run.py"))
+    print()
+
+
+# ── Slash commands ─────────────────────────────────────────────────────────
+
+def handle_command(agent: TerminalAgent, line: str) -> bool:
+    """Handle a slash command.  Returns True if the caller should exit."""
+    parts = line.split(None, 1)
+    cmd = parts[0].lower()
+    arg = parts[1].strip() if len(parts) > 1 else ""
+
+    if cmd in ("/quit", "/exit"):
+        return True
+    if cmd == "/help":
+        print(_HELP)
+    elif cmd == "/new":
+        sid = agent.new_session()
+        agent.remember_session(sid)
+        print(f"Started new session: {sid}")
+    elif cmd == "/sessions":
+        sessions = agent.list_sessions()
+        if not sessions:
+            print("No terminal sessions yet.")
+        else:
+            for s in sessions:
+                marker = " (current)" if s == agent.session_id else ""
+                print(f"  {s}{marker}")
+    elif cmd == "/load":
+        if not arg:
+            print("usage: /load <session-id>")
+        else:
+            agent._switch_session(arg)
+            agent.remember_session(arg)
+            print(f"Loaded session {arg} ({len(agent.history)} rows).")
+    elif cmd == "/history":
+        rows = agent.history
+        if not rows:
+            print("History is empty.")
+        else:
+            for role, content, _tid, tname, _targs, _ef in rows:
+                if role == "analysis":
+                    continue
+                label = {"user": "You", "assistant": "Agent",
+                         "tool": f"tool:{tname}"}.get(role, role)
+                text = (content or "").strip()
+                if len(text) > 200:
+                    text = text[:197] + "..."
+                print(f"  {label}: {text}")
+    elif cmd in ("/model", "/about"):
+        print(f"model   {agent.model_name}")
+        print(f"server  {config.SERVER_URL}")
+        print(f"session {agent.session_id}")
+    elif cmd == "/clear":
+        sys.stdout.write("\033[2J\033[H")
+    else:
+        print(f"Unknown command: {cmd}  (try /help)")
+    return False
+
+
+# ── Input reading (with backslash continuation) ────────────────────────────
+
+def read_line(prompt: str) -> str:
+    line = input(prompt)
+    if line.rstrip().endswith("\\"):
+        buf = line.rstrip()[:-1]
+        while True:
+            cont = input("  …")
+            if cont.rstrip().endswith("\\"):
+                buf += "\n" + cont.rstrip()[:-1]
+            else:
+                buf += "\n" + cont
+                break
+        return buf
+    return line
+
+
+# ── Main loop ──────────────────────────────────────────────────────────────
+
+def run(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(
+        prog="nbchat-tui",
+        description="Minimal terminal chat UI for nbchat.",
+    )
+    parser.add_argument("--new", action="store_true",
+                        help="force a new session")
+    parser.add_argument("--session", metavar="ID",
+                        help="resume a specific session id")
+    parser.add_argument("--no-color", action="store_true",
+                        help="disable ANSI colours")
+    parser.add_argument("--check", action="store_true",
+                        help="check the llama-server is reachable, then exit")
+    args = parser.parse_args(argv)
+
+    up = server_ok()
+    if args.check:
+        print("llama-server reachable." if up
+              else f"llama-server NOT reachable at {config.SERVER_URL}")
+        return 0 if up else 1
+
+    agent = TerminalAgent(color=not args.no_color)
+
+    if args.session:
+        agent._switch_session(args.session)
+    elif not args.new:
+        last = TerminalAgent.last_session()
+        if last:
+            agent._switch_session(last)
+    agent.remember_session(agent.session_id)
+
+    print_banner(agent, up)
+
+    prompt = agent.palette.cyan("❯ ")
+    while True:
+        try:
+            line = read_line(prompt).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nBye.")
+            break
+
+        if not line:
+            continue
+
+        if line.startswith("/"):
+            if handle_command(agent, line):
+                print("Bye.")
+                break
+            continue
+
+        try:
+            agent.send(line)
+            agent.remember_session(agent.session_id)
+        except KeyboardInterrupt:
+            agent._stop_event.set()
+            print("\n" + agent.palette.yellow("[interrupted]"))
+
+    return 0

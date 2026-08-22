@@ -1,0 +1,221 @@
+"""TerminalAgent — headless agent with a plain-text terminal frontend.
+
+This is the terminal counterpart of :class:`nbchat.channels.whatsapp_agent.
+WhatsAppAgent`: it mixes in the *full* agent stack — ``ContextMixin`` +
+``ConversationMixin`` (L1/L2 memory, token-budget windowing, hard-trim,
+compression, monitoring and the agentic tool-calling loop with streaming) —
+but replaces the ipywidgets output hooks with plain ``stdout`` writes.
+
+No Jupyter, no ipywidgets, no browser.  Runs in a basic terminal.
+"""
+from __future__ import annotations
+
+import json
+import sys
+import threading
+import uuid
+from typing import List, Tuple
+
+from nbchat.core import config
+from nbchat.core import db
+from nbchat.core import compressor as comp
+from nbchat.ui.context_manager import ContextMixin, ImportanceTracker
+from nbchat.ui.conversation import ConversationMixin
+from nbchat.tui.colors import Palette
+
+# Session ids are namespaced so terminal chats are easy to spot in the shared
+# chat_history.db alongside Jupyter / WhatsApp sessions.
+_SESSION_PREFIX = "tui:"
+
+# Pseudo session used to persist small TUI state (e.g. "last used session")
+# without polluting the real session list (no chat rows are ever written here).
+_STATE_SESSION = ":tui:state"
+
+
+def short_arg(value) -> str:
+    """One-line, length-bounded rendering of a single tool argument."""
+    if isinstance(value, str):
+        text = value.replace("\n", " ")
+    else:
+        text = str(value)
+    return text if len(text) <= 60 else text[:57] + "..."
+
+
+class TerminalAgent(ContextMixin, ConversationMixin):
+    """Interactive agent whose conversation loop renders to the terminal."""
+
+    MAX_TOOL_TURNS = config.MAX_TOOL_TURNS
+
+    def __init__(self, *, color: bool = True) -> None:
+        db.init_db()
+        self.palette = Palette(color)
+        self.system_prompt = config.DEFAULT_SYSTEM_PROMPT
+        self.model_name = config.MODEL_NAME
+
+        self.session_id = self._new_session_id()
+        self.history: List[Tuple[str, str, str, str, str, int]] = []
+        self.task_log: List[str] = []
+        self._turn_summary_cache: dict = {}
+        self._summary_futures: dict = {}
+        self._importance_tracker = ImportanceTracker(
+            persist_fraction=config.PERSIST_FRACTION
+        )
+        self._stop_event = threading.Event()
+        self._history_lock = threading.Lock()
+        self._tool_running = False
+
+        # Streaming / capture state (reset between LLM calls).
+        self._reasoning_printed = ""
+        self._content_printed = ""
+        self._content_started = False
+        self._last_response: str = ""
+
+        comp.init_session(self.session_id)
+
+    # ── Session management ─────────────────────────────────────────────────
+
+    @staticmethod
+    def _new_session_id() -> str:
+        return _SESSION_PREFIX + uuid.uuid4().hex[:12]
+
+    def _switch_session(self, session_id: str) -> None:
+        """Load history for *session_id* into this agent instance."""
+        if session_id == self.session_id:
+            return
+        self.session_id = session_id
+        self.history = list(db.load_history(session_id))
+        self.task_log = db.load_task_log(session_id)
+        self._turn_summary_cache = db.load_turn_summaries(session_id)
+        comp.init_session(session_id)
+
+    def new_session(self) -> str:
+        """Start a fresh session; returns its id."""
+        self._flush_monitor()
+        sid = self._new_session_id()
+        self.session_id = sid
+        self._reset_state()
+        comp.init_session(sid)
+        return sid
+
+    def list_sessions(self) -> List[str]:
+        return [s for s in db.get_session_ids() if s.startswith(_SESSION_PREFIX)]
+
+    @staticmethod
+    def last_session() -> str:
+        return db._meta_get(_STATE_SESSION, "last_session")
+
+    @staticmethod
+    def remember_session(session_id: str) -> None:
+        db._meta_set(_STATE_SESSION, "last_session", session_id)
+
+    def _reset_state(self) -> None:
+        with self._history_lock:
+            self.history = []
+        self.task_log = []
+        self._turn_summary_cache = {}
+        self._summary_futures = {}
+        try:
+            db.clear_core_memory(self.session_id)
+            db.delete_episodic_for_session(self.session_id)
+        except Exception:
+            pass
+
+    def _flush_monitor(self) -> None:
+        try:
+            from nbchat.core import monitoring as mon
+
+            mon.flush_session_monitor(self.session_id, db)
+        except Exception:
+            pass
+
+    # ── Conversation entry point ───────────────────────────────────────────
+
+    def send(self, text: str) -> str:
+        """Append a user message and run the (blocking) agentic turn.
+
+        Returns the agent's final reply text.  Safe to call from the main
+        thread: ``KeyboardInterrupt`` (Ctrl+C) propagates so the caller can
+        interrupt streaming.
+        """
+        self._last_response = ""
+        self._stop_event.clear()
+
+        self.history.append(("user", text, "", "", "", 0))
+        db.log_message(self.session_id, "user", text)
+        self._print_user(text)
+
+        self._process_conversation_turn()
+        return self._last_response
+
+    # ── Terminal output hooks (ConversationMixin interface) ────────────────
+
+    def _print_user(self, text: str) -> None:
+        p = self.palette
+        sys.stdout.write(p.green("You: ") + "\n")
+        for line in text.splitlines() or [""]:
+            sys.stdout.write("  " + line + "\n")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
+
+    def _on_stream_reasoning(self, reasoning: str) -> None:
+        p = self.palette
+        delta = reasoning[len(self._reasoning_printed):]
+        if delta:
+            if not self._reasoning_printed:
+                sys.stdout.write(p.dim("[thinking] "))
+            sys.stdout.write(p.dim(delta))
+            sys.stdout.flush()
+        self._reasoning_printed = reasoning
+
+    def _on_stream_token(self, content: str) -> None:
+        p = self.palette
+        if not self._content_started:
+            if self._reasoning_printed:
+                sys.stdout.write("\n")
+            sys.stdout.write(p.cyan("» "))
+            self._content_started = True
+        delta = content[len(self._content_printed):]
+        if delta:
+            sys.stdout.write(delta)
+            sys.stdout.flush()
+        self._content_printed = content
+
+    def _on_stream_complete(self, content: str, tool_calls: list | None) -> None:
+        if self._content_started or self._reasoning_printed:
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+        if content:
+            self._last_response = content
+        # Reset streaming state for the next LLM call in the loop.
+        self._reasoning_printed = ""
+        self._content_printed = ""
+        self._content_started = False
+
+    def _on_tool_display(self, raw_result: str, tool_name: str, tool_args: str) -> None:
+        p = self.palette
+        hint = _arg_hint(tool_args)
+        preview = raw_result[:300].replace("\n", " ⏎ ")
+        sys.stdout.write(p.blue(f"  [tool] {p.bold(tool_name)}({hint})\n"))
+        if preview.strip():
+            ellipsis = "…" if len(raw_result) > 300 else ""
+            sys.stdout.write(p.gray(f"         {preview}{ellipsis}\n"))
+        sys.stdout.flush()
+
+    def _on_agent_message(self, text: str) -> None:
+        sys.stdout.write(self.palette.red(f"  ! {text}\n"))
+        sys.stdout.flush()
+        if not self._last_response:
+            self._last_response = text
+
+    # _append / _refresh_monitoring_panel — inherited no-ops (no widget UI).
+
+
+def _arg_hint(args_json: str) -> str:
+    """Compact one-line rendering of a tool-args JSON string."""
+    try:
+        args = json.loads(args_json)
+    except Exception:
+        return args_json[:120]
+    if not isinstance(args, dict):
+        return short_arg(args)
+    return ", ".join(f"{k}={short_arg(v)}" for k, v in args.items())
