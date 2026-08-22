@@ -128,10 +128,14 @@ class EmailBridge:
     # ── Helpers ────────────────────────────────────────────────────────────
 
     def _is_outbound(self, msg) -> bool:
-        """True if this is a message we sent ourselves (avoid self-loops)."""
-        if msg.from_addr and msg.from_addr.lower().strip() == self._my_addr:
-            return True
-        # Also skip by the marker in the subject, in case the From is odd.
+        """True if this is one of our own auto-replies (avoid self-loops).
+
+        We do NOT skip by From address: the user often replies from the
+        same Gmail account the TUI uses, and those replies are exactly
+        what we want to inject into the chat.  We only skip messages
+        whose subject carries the ``(nbchat-tui)`` marker that we add
+        to every auto-reply.
+        """
         return f"({OUTBOUND_MARKER})" in msg.subject
 
     @staticmethod

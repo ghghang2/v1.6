@@ -104,19 +104,31 @@ def test_bridge_injects_email_as_user_turn():
     assert any(r[0] == "user" and "alice@example.com" in r[1] for r in agent.history)
 
 
-def test_bridge_skips_own_outbound():
-    """Bridge should skip emails from its own address."""
+def test_bridge_skips_only_marked_replies():
+    """Bridge skips only its own auto-replies (by subject marker), NOT by
+    From address - the user may reply from the same Gmail account."""
     agent = TerminalAgent(color=False)
     from nbchat.tui.email_bridge import EmailBridge
     bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
 
-    own_msg = email_inbox.EmailMessage(
+    # A message with the outbound marker is skipped (our own auto-reply).
+    own_reply = email_inbox.EmailMessage(
         message_id="<self@x>", from_addr=email_smtp.LOGIN,
         subject="Re: Something (nbchat-tui)", body="self reply",
         date=None, uid="2",
     )
-    assert bridge._is_outbound(own_msg) is True
+    assert bridge._is_outbound(own_reply) is True
 
+    # A message from the SAME address WITHOUT the marker is a genuine user
+    # reply and must be injected, not skipped.
+    user_same_addr = email_inbox.EmailMessage(
+        message_id="<u1@x>", from_addr=email_smtp.LOGIN,
+        subject="Re: Something", body="testing the bridge",
+        date=None, uid="4",
+    )
+    assert bridge._is_outbound(user_same_addr) is False
+
+    # A message from a different address is also injected.
     other_msg = email_inbox.EmailMessage(
         message_id="<other@x>", from_addr="alice@example.com",
         subject="Hello", body="hi", date=None, uid="3",
