@@ -164,7 +164,25 @@ def main() -> None:
     #     "--mlock",
     #     "--metrics",
     # ]
-    llama_cmd = [ ## B200
+    # --- PERF TUNING (2026-08-22, L40S box) -----------------------------------
+    # Goal: maximize t/s / minimize agent-loop latency. Key changes vs the
+    # previous block (kept below for A/B):
+    #   1. --cache-ram -1           : remove the default 8192 MiB prompt-cache cap
+    #                                 that was silently disabling KV/prefix reuse
+    #                                 (log: "prompt state size 8390 MiB exceeds
+    #                                  cache size limit 8192 MiB, skipping").
+    #   2. --cache-type-k/v q8_0    : halve KV size -> reuse fits, faster prefill
+    #                                 AND decode (decode is bandwidth-bound).
+    #   3. (drop) --reasoning-preserve: keep only last turn's thinking trace,
+    #                                 shrinks the 88k-91k token prompts.
+    #   4. bigger prefill chunks    : --batch-size 8192 --ubatch-size 4096.
+    #   5. --poll 100               : busy-wait, lower per-token CPU latency.
+    #   6. --load-mode mmap         : avoid the RLIMIT_MEMLOCK mlock failure.
+    # NOTE: if the agent runs strictly serially (one request at a time) also set
+    #       --parallel 1 --ctx-size 131072 to free a full slot's KV for the
+    #       prompt cache. Kept --parallel/--ctx-size from config for now.
+    # ---------------------------------------------------------------------------
+    llama_cmd = [ ## L40S tuned
         "./llama-server",
         "-hf", MODEL,
         "--port", str(PORT),
@@ -172,37 +190,58 @@ def main() -> None:
         "--ctx-size", str(CTX_SIZE),
         "--n-gpu-layers", str(N_GPU_LAYERS),
         "--flash-attn", "1",
+        "--cache-type-k", "q8_0",
+        "--cache-type-v", "q8_0",
+        "--cache-ram", "-1",
+        "--batch-size", "8192",
+        "--ubatch-size", "4096",
+        "--spec-default",
+        "--spec-type", "draft-mtp",
+        "--reasoning", "on",
+        "--chat-template-kwargs", '{"reasoning_effort": "medium"}',
+        "--reasoning-budget", "4096",
+        "--reasoning-budget-message", "... I am thinking for too -- let me gather more info about the task.",
+        "--no-mmproj", ## disable vision
         "--temp", "1.0", # 27B thinking
         "--top-p", "0.95",
         "--top-k", "20",
         "--min-p", "0.0",
-        "--reasoning", "on",
-        "--chat-template-kwargs", '{"reasoning_effort": "medium"}',
-        "--batch-size", "4096",
-        "--ubatch-size", "2048",
-        "--spec-default",
-        "--spec-type", "draft-mtp",
-        "--reasoning-preserve", 
-        "--fit", "off", 
-        "--agent",
-        # "--cache-type-k", "q8_0",
-        # "--cache-type-v", "q8_0",
-        "--reasoning-budget", "4096",
-        "--reasoning-budget-message", "... I am thinking for too -- let me gather more info about the task.",
-        # "--no-mmap",
-        "--no-mmproj", ## disable vision
         "--repeat-penalty", "1.0",
-        "--load-mode", "mlock",
-        # "--load-mode", "no-mmap",
-        # "--mlock",
+        "--poll", "100",
+        "--fit", "off",
+        "--agent",
+        "--load-mode", "mmap",   # was "mlock" -> RLIMIT_MEMLOCK failure
         "--metrics",
-        # # Speculative decoding — draft on GPU!
-        # "-hfrd", "unsloth/Qwen3.5-0.8B-GGUF:IQ4_XS",
-        # "-ngld", "999",             # ← KEY FIX: put the 0.8B on GPU, it's ~300MB
-        # "--ctx-size-draft", "8192", # ← smaller draft ctx saves VRAM
-        # "--draft", "16",
-        # "--draft-p-min", "0.5",     # lower threshold for thinking-token uncertainty
     ]
+    # --- previous block (A/B reference) ----------------------------------------
+    # llama_cmd = [ ## B200
+    #     "./llama-server",
+    #     "-hf", MODEL,
+    #     "--port", str(PORT),
+    #     "--parallel", str(N_PARALLEL),
+    #     "--ctx-size", str(CTX_SIZE),
+    #     "--n-gpu-layers", str(N_GPU_LAYERS),
+    #     "--flash-attn", "1",
+    #     "--temp", "1.0",
+    #     "--top-p", "0.95",
+    #     "--top-k", "20",
+    #     "--min-p", "0.0",
+    #     "--reasoning", "on",
+    #     "--chat-template-kwargs", '{"reasoning_effort": "medium"}',
+    #     "--batch-size", "4096",
+    #     "--ubatch-size", "2048",
+    #     "--spec-default",
+    #     "--spec-type", "draft-mtp",
+    #     "--reasoning-preserve",
+    #     "--fit", "off",
+    #     "--agent",
+    #     "--reasoning-budget", "4096",
+    #     "--reasoning-budget-message", "... I am thinking for too -- let me gather more info about the task.",
+    #     "--no-mmproj",
+    #     "--repeat-penalty", "1.0",
+    #     "--load-mode", "mlock",
+    #     "--metrics",
+    # ]
     pids["llama"] = _run_detached(llama_cmd, LLAMA_LOG, "llama-server")
 
     # # 3. Start WhatsApp Python Server
