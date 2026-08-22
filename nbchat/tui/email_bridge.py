@@ -1,9 +1,20 @@
 """Email bridge for the nbchat terminal UI.
 
 Extends the TUI chat input box to the email layer: a daemon thread polls the
-Gmail inbox (IMAP) and, for each new message, injects it into the agent's chat
-stream as a user interjection — exactly as if the user typed it into the
-terminal.  Optionally it sends the agent's reply back to the sender by email.
+Gmail inbox (IMAP) and, for each **matching** message, injects it into the
+agent's chat stream as a user interjection — exactly as if the user typed it
+into the terminal.  Optionally it sends the agent's reply back by email.
+
+Filtering
+---------
+Only emails that satisfy BOTH conditions are injected:
+
+1. Sent **from the user's own address** (``ghghang2@gmail.com``).
+2. Subject contains the string ``nbchat`` (case-insensitive).
+
+All other inbox traffic (colleagues, newsletters, auto-replies, etc.) is
+silently marked read and ignored.  This prevents the bridge from responding
+to random unread mail on startup.
 
 Design
 ------
@@ -51,7 +62,7 @@ class EmailBridge:
         self._seen: set[str] = set()   # in-memory Message-ID dedupe (belt & suspenders)
         self._thread: threading.Thread | None = None
 
-    # ── Lifecycle ──────────────────────────────────────────────────────────
+    # ── Lifecycle ──────────────────────────────────────────────────────
 
     def start(self) -> None:
         if self._thread and self._thread.is_alive():
@@ -75,7 +86,7 @@ class EmailBridge:
     def running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
 
-    # ── Poll loop ──────────────────────────────────────────────────────────
+    # ── Poll loop ──────────────────────────────────────────────────────
 
     def _loop(self) -> None:
         while not self._stop.is_set():
@@ -88,14 +99,20 @@ class EmailBridge:
             self._stop.wait(self._poll_interval)
 
     def _poll_once(self) -> None:
-        """Fetch unseen mail and inject each new message into the chat."""
+        """Fetch unseen mail and inject matching messages into the chat.
+
+        Only emails from our own address with 'nbchat' in the subject are
+        processed; all others are marked read and silently skipped.
+        """
         for msg in email_inbox.fetch_unseen(limit=20):
             if self._stop.is_set():
                 break
-            # Skip our own replies and anything already handled this process.
-            if self._is_outbound(msg):
+            # Only process deliberate user commands: from our own address
+            # with 'nbchat' in the subject.  Everything else is skipped.
+            if not self._should_process(msg):
                 email_inbox.mark_read(msg.uid)
                 continue
+            # Dedup check (belt & suspenders for in-flight messages).
             if msg.message_id in self._seen:
                 email_inbox.mark_read(msg.uid)
                 continue
@@ -125,18 +142,41 @@ class EmailBridge:
                     _log.warning("auto-reply failed: %s: %s",
                                  type(exc).__name__, exc)
 
-    # ── Helpers ────────────────────────────────────────────────────────────
+    # ── Helpers ──────────────────────────────────────────────────────
 
     def _is_outbound(self, msg) -> bool:
         """True if this is one of our own auto-replies (avoid self-loops).
 
-        We do NOT skip by From address: the user often replies from the
-        same Gmail account the TUI uses, and those replies are exactly
-        what we want to inject into the chat.  We only skip messages
-        whose subject carries the ``(nbchat-tui)`` marker that we add
-        to every auto-reply.
+        Auto-replies carry the ``(nbchat-tui)`` marker in the subject so
+        they are never re-processed.
         """
         return f"({OUTBOUND_MARKER})" in msg.subject
+
+    def _should_process(self, msg) -> bool:
+        """True if this email should be injected into the chat.
+
+        Only emails that satisfy **all** conditions are processed:
+
+        1. NOT one of our own auto-replies (subject has no ``(nbchat-tui)``).
+        2. Sent from our own address (``ghghang2@gmail.com``).
+        3. Subject contains the string ``nbchat`` (case-insensitive).
+
+        This ensures the bridge acts as a deliberate command channel —
+        the user sends themselves an email with 'nbchat' in the subject,
+        and it gets injected as a user turn.  All other inbox traffic
+        (colleagues, newsletters, etc.) is silently ignored.
+        """
+        # Skip our own auto-replies (prevent self-loops).
+        if self._is_outbound(msg):
+            return False
+        # Must be from our own address.
+        from_addr = self._parse_addr(msg.from_addr)
+        if not from_addr or from_addr.lower() != self._my_addr.lower():
+            return False
+        # Must have 'nbchat' in the subject.
+        if "nbchat" not in msg.subject.lower():
+            return False
+        return True
 
     @staticmethod
     def _parse_addr(from_header: str) -> str | None:

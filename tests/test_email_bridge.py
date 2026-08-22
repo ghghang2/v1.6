@@ -16,7 +16,8 @@ from nbchat.core import email_inbox, email_smtp
 from nbchat.tui import TerminalAgent
 
 
-# ── email_inbox parsing (no network) ──────────────────────────────────────
+# ── email_inbox parsing (no network) ─────────────────────────────────────────────
+
 
 def test_decode_header_plain():
     assert email_inbox._decode_header("Alice <alice@example.com>") == "Alice <alice@example.com>"
@@ -74,44 +75,118 @@ def test_email_message_dataclass():
     assert em.subject == "Hi"
 
 
-# ── email_bridge: injection into agent (mocked network) ───────────────────
+# ── email_bridge: _should_process filter ─────────────────────────────────────────
 
-def test_bridge_injects_email_as_user_turn():
-    """Email bridge calls agent.send_from_email, which appends to history."""
+def test_should_process_own_addr_with_nbchat_subject():
+    """Email from own address with 'nbchat' in subject is processed."""
     agent = TerminalAgent(color=False)
     from nbchat.tui.email_bridge import EmailBridge
     bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
 
-    # Mock send_from_email to capture the call
-    captured = {}
-    def fake_send_from_email(sender, subject, body):
-        captured.update(sender=sender, subject=subject, body=body)
-        # Simulate what the real method does: append to history
-        text = f"[Email message from {sender}]\nSubject: {subject}\n\n{body}"
-        agent.history.append(("user", text, "", "", "", 0))
-        return "I received your email."
-
-    with patch.object(agent, "send_from_email", side_effect=fake_send_from_email):
-        msg = email_inbox.EmailMessage(
-            message_id="<t1@x>", from_addr="alice@example.com",
-            subject="Test", body="Hi agent", date=None, uid="1",
-        )
-        # Manually call the injection path
-        agent.send_from_email.__wrapped__ if hasattr(agent.send_from_email, '__wrapped__') else None
-        # Actually just verify the agent method works
-        agent.send_from_email("alice@example.com", "Test", "Hi agent")
-
-    assert any(r[0] == "user" and "alice@example.com" in r[1] for r in agent.history)
+    msg = email_inbox.EmailMessage(
+        message_id="<cmd1@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: check the weather", body="what's the weather?",
+        date=None, uid="10",
+    )
+    assert bridge._should_process(msg) is True
 
 
-def test_bridge_skips_only_marked_replies():
-    """Bridge skips only its own auto-replies (by subject marker), NOT by
-    From address - the user may reply from the same Gmail account."""
+def test_should_process_nbchat_case_insensitive():
+    """'nbchat' matching is case-insensitive."""
     agent = TerminalAgent(color=False)
     from nbchat.tui.email_bridge import EmailBridge
     bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
 
-    # A message with the outbound marker is skipped (our own auto-reply).
+    msg = email_inbox.EmailMessage(
+        message_id="<cmd2@x>", from_addr=email_smtp.LOGIN,
+        subject="NBChat test", body="hi",
+        date=None, uid="11",
+    )
+    assert bridge._should_process(msg) is True
+
+
+def test_should_reject_other_address_with_nbchat_subject():
+    """Email from a different address is rejected even with 'nbchat' in subject."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<other1@x>", from_addr="someone@else.com",
+        subject="nbchat test", body="hi",
+        date=None, uid="12",
+    )
+    assert bridge._should_process(msg) is False
+
+
+def test_should_reject_own_addr_without_nbchat_subject():
+    """Email from own address but without 'nbchat' in subject is rejected."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<other2@x>", from_addr=email_smtp.LOGIN,
+        subject="RE: How was baby Winter doing?", body="Sounds good!",
+        date=None, uid="13",
+    )
+    assert bridge._should_process(msg) is False
+
+
+def test_should_reject_other_addr_without_nbchat_subject():
+    """Email from a different address without 'nbchat' is rejected (the
+    case that was causing the original bug: random unread inbox mail)."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    # Simulates the Linna / Health Unit email that was being picked up.
+    msg = email_inbox.EmailMessage(
+        message_id="<linna@x>", from_addr="LinNX@state.gov",
+        subject="RE: [External] Re: How was baby Winter doing?",
+        body="I've confirmed your appointment for 2:30pm today.",
+        date=None, uid="14",
+    )
+    assert bridge._should_process(msg) is False
+
+
+def test_should_reject_outbound_auto_reply():
+    """Our own auto-replies (with nbchat-tui marker) are never processed,
+    even though they come from our own address and contain 'nbchat'."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<self@x>", from_addr=email_smtp.LOGIN,
+        subject="Re: nbchat test (nbchat-tui)", body="auto reply",
+        date=None, uid="15",
+    )
+    assert bridge._should_process(msg) is False
+
+
+def test_should_process_from_header_with_display_name():
+    """From header in 'Name <addr>' format is parsed correctly."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<cmd3@x>",
+        from_addr=f"\\u4f8b\\u5b50 \\u2764\\ufe0f <{email_smtp.LOGIN}>",
+        subject="nbchat: do a thing", body="please do it",
+        date=None, uid="16",
+    )
+    assert bridge._should_process(msg) is True
+
+
+# ── email_bridge: _is_outbound ──────────────────────────────────────────────────
+
+def test_is_outbound_detects_marker():
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
     own_reply = email_inbox.EmailMessage(
         message_id="<self@x>", from_addr=email_smtp.LOGIN,
         subject="Re: Something (nbchat-tui)", body="self reply",
@@ -119,21 +194,72 @@ def test_bridge_skips_only_marked_replies():
     )
     assert bridge._is_outbound(own_reply) is True
 
-    # A message from the SAME address WITHOUT the marker is a genuine user
-    # reply and must be injected, not skipped.
-    user_same_addr = email_inbox.EmailMessage(
+    regular = email_inbox.EmailMessage(
         message_id="<u1@x>", from_addr=email_smtp.LOGIN,
-        subject="Re: Something", body="testing the bridge",
+        subject="nbchat test", body="testing",
         date=None, uid="4",
     )
-    assert bridge._is_outbound(user_same_addr) is False
+    assert bridge._is_outbound(regular) is False
 
-    # A message from a different address is also injected.
-    other_msg = email_inbox.EmailMessage(
-        message_id="<other@x>", from_addr="alice@example.com",
-        subject="Hello", body="hi", date=None, uid="3",
+
+# ── email_bridge: injection + poll loop (mocked network) ─────────────────────────
+
+def test_poll_injects_matching_email_only():
+    """_poll_once injects only matching emails; others are marked read and
+    never reach the agent."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    matching = email_inbox.EmailMessage(
+        message_id="<m1@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: say hi", body="please say hi",
+        date=None, uid="20",
     )
-    assert bridge._is_outbound(other_msg) is False
+    non_matching = email_inbox.EmailMessage(
+        message_id="<m2@x>", from_addr="LinNX@state.gov",
+        subject="RE: appointment", body="confirmed for 2:30pm",
+        date=None, uid="21",
+    )
+
+    captured = {}
+    def fake_send(sender, subject, body):
+        captured["args"] = (sender, subject, body)
+        return "hi there"
+
+    with patch("nbchat.core.email_inbox.fetch_unseen",
+               return_value=[non_matching, matching]), \
+         patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
+         patch.object(agent, "send_from_email", side_effect=fake_send) as mock_send:
+        bridge._poll_once()
+
+    # Agent was called exactly once — for the matching email only.
+    mock_send.assert_called_once()
+    assert captured["args"][1] == "nbchat: say hi"
+
+    # Both emails were marked read (non-matching immediately, matching after inject).
+    assert mock_mr.call_count == 2
+
+
+def test_poll_injects_nothing_when_no_match():
+    """When no email matches the filter, the agent is never called."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    random_mail = email_inbox.EmailMessage(
+        message_id="<r1@x>", from_addr="newsletter@example.com",
+        subject="Weekly digest", body="here's your news",
+        date=None, uid="30",
+    )
+
+    with patch("nbchat.core.email_inbox.fetch_unseen",
+               return_value=[random_mail]), \
+         patch("nbchat.core.email_inbox.mark_read"), \
+         patch.object(agent, "send_from_email") as mock_send:
+        bridge._poll_once()
+
+    mock_send.assert_not_called()
 
 
 def test_bridge_parse_addr():
@@ -161,8 +287,8 @@ def test_bridge_dedup_by_message_id():
     bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
 
     msg = email_inbox.EmailMessage(
-        message_id="<dup@x>", from_addr="a@b.com",
-        subject="Dup", body="test", date=None, uid="5",
+        message_id="<dup@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: dup test", body="test", date=None, uid="5",
     )
     # Simulate first injection
     bridge._seen.add(msg.message_id)
@@ -174,7 +300,8 @@ def test_bridge_dedup_by_message_id():
         mock_send.assert_not_called()
 
 
-# ── agent.send_from_email (mocked LLM) ────────────────────────────────────
+# ── agent.send_from_email (mocked LLM) ─────────────────────────────────────────────
+
 
 def test_send_from_email_appends_labelled_user_message():
     agent = TerminalAgent(color=False)
@@ -193,7 +320,8 @@ def test_send_from_email_appends_labelled_user_message():
     assert "Please do X" in last_user
 
 
-# ── truncation guard (conversation loop) ──────────────────────────────────
+# ── truncation guard (conversation loop) ─────────────────────────────────────────────
+
 
 def test_truncation_guard_detects_ending_colon():
     """The truncation heuristic should flag a reply ending with a colon."""
