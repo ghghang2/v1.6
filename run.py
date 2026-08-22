@@ -26,7 +26,7 @@ from nbchat.core import config
 SERVICE_INFO = Path(config.SERVICE_INFO_PATH)
 LLAMA_LOG    = Path(config.LLAMA_LOG_PATH)
 # RELEASE_REPO = f"{config.USER_NAME}/llamacpp_g4"
-RELEASE_REPO = f"{config.USER_NAME}/llamacpp_b200"
+RELEASE_REPO = f"{config.USER_NAME}/llamacpp_l40s"
 MODEL        = config.MODEL_NAME
 PORT         = config.PORT
 N_PARALLEL   = config.N_PARALLEL
@@ -177,7 +177,7 @@ def main() -> None:
         "--top-k", "20",
         "--min-p", "0.0",
         "--reasoning", "on",
-        "--chat-template-kwargs", '{"reasoning_effort": "xhigh"}',
+        "--chat-template-kwargs", '{"reasoning_effort": "medium"}',
         "--batch-size", "4096",
         "--ubatch-size", "2048",
         "--spec-default",
@@ -188,7 +188,7 @@ def main() -> None:
         # "--cache-type-k", "q8_0",
         # "--cache-type-v", "q8_0",
         "--reasoning-budget", "4096",
-        "--reasoning-budget-message", "... I am thinking for too -- let me gather more info about the task."
+        "--reasoning-budget-message", "... I am thinking for too -- let me gather more info about the task.",
         # "--no-mmap",
         "--no-mmproj", ## disable vision
         "--repeat-penalty", "1.0",
