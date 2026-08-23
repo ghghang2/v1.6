@@ -159,6 +159,7 @@ def main() -> None:
         "--spec-type", "draft-mtp",
         "--spec-draft-n-max", "1",
         "--reasoning", "on",
+        "--reasoning-preserve",
         "--chat-template-kwargs", '{"reasoning_effort": "medium"}',
         "--reasoning-budget", "4096",
         "--reasoning-budget-message", "... I am thinking for too -- let me gather more info about the task.",
