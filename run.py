@@ -26,7 +26,7 @@ from nbchat.core import config
 SERVICE_INFO = Path(config.SERVICE_INFO_PATH)
 LLAMA_LOG    = Path(config.LLAMA_LOG_PATH)
 # RELEASE_REPO = f"{config.USER_NAME}/llamacpp_g4"
-RELEASE_REPO = f"{config.USER_NAME}/llamacpp_l40s"
+RELEASE_REPO = f"{config.USER_NAME}/llamacpp_5090"
 MODEL        = config.MODEL_NAME
 PORT         = config.PORT
 N_PARALLEL   = config.N_PARALLEL
@@ -132,11 +132,12 @@ def main() -> None:
         sys.exit(f"[ERROR] Port {PORT} is already in use")
 
     # 1. Binary Setup
-    _run_blocking(
-        f"gh release download --repo {RELEASE_REPO} --pattern llama-server",
-        extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
-    )
-    _run_blocking("chmod +x ./llama-server")
+#    _run_blocking(
+#        f"gh release download --repo {RELEASE_REPO} --pattern llama-server --pattern llama-bench",
+#        extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
+#    )
+ #   _run_blocking("chmod +x ./llama-server")
+ #   _run_blocking("chmod +x ./llama-bench")
 
     pids = {}
 
@@ -182,21 +183,22 @@ def main() -> None:
     #       --parallel 1 --ctx-size 131072 to free a full slot's KV for the
     #       prompt cache. Kept --parallel/--ctx-size from config for now.
     # ---------------------------------------------------------------------------
-    llama_cmd = [ ## L40S tuned
+    llama_cmd = [ ## 5090 untuned
         "./llama-server",
         "-hf", MODEL,
         "--port", str(PORT),
         "--parallel", str(N_PARALLEL),
         "--ctx-size", str(CTX_SIZE),
         "--n-gpu-layers", str(N_GPU_LAYERS),
-        "--flash-attn", "1",
+        "--flash-attn", "on",
         "--cache-type-k", "q8_0",
         "--cache-type-v", "q8_0",
         "--cache-ram", "-1",
-        "--batch-size", "8192",
+        "--batch-size", "4096",
         "--ubatch-size", "4096",
         "--spec-default",
         "--spec-type", "draft-mtp",
+        "--spec-draft-n-max", "2",
         "--reasoning", "on",
         "--chat-template-kwargs", '{"reasoning_effort": "medium"}',
         "--reasoning-budget", "4096",
