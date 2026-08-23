@@ -183,14 +183,15 @@ def main() -> None:
     #       --parallel 1 --ctx-size 131072 to free a full slot's KV for the
     #       prompt cache. Kept --parallel/--ctx-size from config for now.
     # ---------------------------------------------------------------------------
-    llama_cmd = [ ## 5090 untuned
+    llama_cmd = [ ## 5090 tuned (r/LocalLLaMA Qwen3.8-27B consensus + bench/THROUGHPUT_FINDINGS.md)
         "./llama-server",
         "-hf", MODEL,
         "--port", str(PORT),
         "--parallel", str(N_PARALLEL),
         "--ctx-size", str(CTX_SIZE),
         "--n-gpu-layers", str(N_GPU_LAYERS),
-        "--flash-attn", "on",
+        "--threads", "32",            # 32 > 64 > 16 (16 was the auto default)
+        "--flash-attn", "off",        # off is ~6% faster than on on this build
         "--cache-type-k", "q8_0",
         "--cache-type-v", "q8_0",
         "--cache-ram", "-1",
@@ -198,7 +199,7 @@ def main() -> None:
         "--ubatch-size", "4096",
         "--spec-default",
         "--spec-type", "draft-mtp",
-        "--spec-draft-n-max", "2",
+        "--spec-draft-n-max", "1",    # n=1 beats n=2 (n=2 costs ~7%)
         "--reasoning", "on",
         "--chat-template-kwargs", '{"reasoning_effort": "medium"}',
         "--reasoning-budget", "4096",
