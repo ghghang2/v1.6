@@ -1,5 +1,6 @@
 # --- Heavy / downloaded runtime artifacts (never commit) ---
 /llama-server
+/llama-bench
 *.gguf
 hf_cache/
 .hf/
