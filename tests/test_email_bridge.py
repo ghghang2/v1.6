@@ -269,6 +269,7 @@ def test_poll_injects_matching_email_only():
                return_value=[non_matching, matching]), \
          patch("nbchat.core.email_inbox.fetch_body", return_value="please say hi"), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
+         patch("nbchat.core.email_inbox.mark_read_batch") as mock_batch, \
          patch.object(agent, "send_from_email", side_effect=fake_send) as mock_send:
         _poll_bridge(bridge)
 
@@ -276,8 +277,11 @@ def test_poll_injects_matching_email_only():
     mock_send.assert_called_once()
     assert captured["args"][1] == "nbchat: say hi"
 
-    # Both emails were marked read (non-matching immediately, matching after inject).
-    assert mock_mr.call_count == 2
+    # The matching email is marked read by the worker after inject (one
+    # connection); the non-matching email is batched into a single session.
+    assert mock_mr.call_count == 1
+    assert mock_batch.call_count == 1
+    assert mock_batch.call_args[0][0] == ["21"]
 
 
 def test_poll_injects_nothing_when_no_match():
@@ -295,6 +299,7 @@ def test_poll_injects_nothing_when_no_match():
     with patch("nbchat.core.email_inbox.peek_unseen",
                return_value=[random_mail]), \
          patch("nbchat.core.email_inbox.mark_read"), \
+         patch("nbchat.core.email_inbox.mark_read_batch"), \
          patch.object(agent, "send_from_email") as mock_send:
         _poll_bridge(bridge)
 
@@ -334,6 +339,7 @@ def test_bridge_dedup_by_message_id():
     # Verify it would be skipped
     with patch("nbchat.core.email_inbox.peek_unseen", return_value=[msg]), \
          patch("nbchat.core.email_inbox.mark_read"), \
+         patch("nbchat.core.email_inbox.mark_read_batch"), \
          patch.object(agent, "send_from_email") as mock_send:
         _poll_bridge(bridge)
         mock_send.assert_not_called()

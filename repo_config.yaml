@@ -102,7 +102,7 @@ high_invalidation_threshold: 0.30
 # Email parameters
 smtp_port: 587
 # Email bridge (TUI) — poll the Gmail inbox and inject replies into the chat
-email_poll_interval: 10      # seconds between IMAP polls when --email is on
+email_poll_interval: 3       # seconds between IMAP polls when --email is on
 email_auto_reply: true       # send the agent's reply back to the sender
 
 # Supervisor — a second, always-on LLM instance on the server's 2nd

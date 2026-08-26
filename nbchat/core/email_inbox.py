@@ -161,6 +161,30 @@ def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
         except Exception:
             pass
 
+def mark_read_batch(uids: list[str], box: str = "INBOX") -> None:
+    """Mark multiple messages (by UID) as SEEN in a single IMAP session.
+
+    Far more efficient than calling :func:`mark_read` in a loop: one
+    TCP+TLS+login+select round-trip instead of one per UID.
+    """
+    if not uids:
+        return
+    import os
+    pw = os.getenv("GHG_APP_PASSWORD")
+    if not pw:
+        raise RuntimeError("GHG_APP_PASSWORD env variable not set")
+    host = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+    try:
+        host.login("ghghang2@gmail.com", pw)
+        host.select(box)
+        # IMAP UID STORE accepts a space-separated UID set.
+        uid_set = " ".join(uids)
+        host.uid("STORE", uid_set, "+FLAGS", "\\Seen")
+    finally:
+        try:
+            host.logout()
+        except Exception:
+            pass
 
 def peek_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
     """Fast header-only fetch of UNSEEN messages.

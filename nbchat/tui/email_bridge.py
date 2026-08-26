@@ -141,27 +141,45 @@ class EmailBridge:
         call ``send_from_email`` (that is the worker's job).  Only emails
         from our own address with 'nbchat' in the subject are enqueued;
         all others are marked read and silently skipped.
+
+        Ordering and efficiency notes
+        ----------------------------
+        * Messages are processed **newest-first** so a fresh command email
+          (always the most recent) is enqueued on the first iteration,
+          without waiting behind any bookkeeping for older mail.
+        * The freshness check runs **before** the match filter and before
+          any IMAP write.  Stale mail (older than the session-start grace
+          window) is skipped with zero connections — this is what makes a
+          large UNSEEN backlog (thousands of old messages) invisible to the
+          bridge instead of costing one IMAP session per message.
+        * All ``mark_read`` writes for skipped *fresh* mail are batched into
+          a single IMAP session at the end of the poll, rather than one
+          connect/login/STORE round-trip per message.
         """
-        for msg in email_inbox.peek_unseen(limit=20):
+        msgs = email_inbox.peek_unseen(limit=20)
+        # Newest-first: a fresh command email is always the most recent, so
+        # handling it first guarantees it is enqueued before any of the
+        # (rare) fresh non-command mail that might precede it.
+        msgs.sort(
+            key=lambda e: e.date or datetime.min.replace(tzinfo=timezone.utc),
+            reverse=True,
+        )
+        mark_uids: list[str] = []
+        for msg in msgs:
             if self._stop.is_set():
                 break
+            # Freshness first: stale mail is left completely untouched
+            # (not marked read, not responded to), with no IMAP write.
+            if not self._is_fresh(msg):
+                continue
             # Only process deliberate user commands: from our own address
             # with 'nbchat' in the subject.  Everything else is skipped.
             if not self._should_process(msg):
-                email_inbox.mark_read(msg.uid)
-                continue
-            # Only act on mail sent since this session started.  Older
-            # unread mail is left alone (NOT marked read, NOT responded to)
-            # so the user is never forced to read stale mail.
-            if not self._is_fresh(msg):
-                _log.info(
-                    "skipping email from before session start: %r",
-                    msg.subject,
-                )
+                mark_uids.append(msg.uid)
                 continue
             # Dedup check (belt & suspenders for in-flight messages).
             if msg.message_id in self._seen:
-                email_inbox.mark_read(msg.uid)
+                mark_uids.append(msg.uid)
                 continue
             # Mark as seen immediately to prevent double-enqueue.
             self._seen.add(msg.message_id)
@@ -173,6 +191,16 @@ class EmailBridge:
                 continue
             self._queue.put(msg)
             _log.info("enqueued email: %r from %s", msg.subject, msg.from_addr)
+        # Mark all skipped fresh mail read in ONE IMAP session (was: one
+        # connection per message).  Stale mail was never added to this list.
+        if mark_uids:
+            try:
+                email_inbox.mark_read_batch(mark_uids)
+            except Exception as exc:
+                _log.warning(
+                    "batch mark_read failed for %d msg(s): %s: %s",
+                    len(mark_uids), type(exc).__name__, exc,
+                )
 
     def _worker_loop(self) -> None:
         """Processing loop: dequeue and process emails one at a time.
