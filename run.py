@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 import time
@@ -121,6 +122,281 @@ def _kill_pid(name: str, pid: int) -> None:
         print(f"! Error stopping {name}: {exc}")
 
 # --------------------------------------------------------------------------- #
+#  Model download monitoring (first-run visibility)
+#
+#  On a first run, ``llama-server -hf MODEL`` downloads the model from Hugging
+#  Face using its own (C++) downloader.  That progress is written to the log
+#  file and is otherwise invisible, so a slow or stalled download looks like a
+#  hang.  We therefore watch the Hugging Face cache directory that llama.cpp
+#  writes into and render a live progress bar (percent, speed and ETA) until
+#  the model file is complete.
+# --------------------------------------------------------------------------- #
+
+_HF_API_BASE = os.environ.get("HF_ENDPOINT", "https://huggingface.co")
+_BAR_WIDTH = 30
+_DL_STALL_WARN_S = 120          # warn when the file stops growing this long
+_DL_STALL_FAIL_S = 900          # abort when it stays stuck this long
+_DL_TOTAL_TIMEOUT_S = 6 * 3600  # hard cap for the whole download
+_DL_STABLE_DONE_S = 10          # a large file stable this long is treated as done
+_DL_MIN_DONE_SIZE = 1 << 30     # >= 1 GiB before the "stable = done" fallback applies
+
+
+def _human_bytes(n: float) -> str:
+    n = float(n)
+    for unit in ("B", "KiB", "MiB", "GiB", "TiB"):
+        if n < 1024.0 or unit == "TiB":
+            return f"{int(n)} B" if unit == "B" else f"{n:.1f} {unit}"
+        n /= 1024.0
+    return f"{n:.1f} TiB"
+
+
+def _fmt_eta(seconds: float) -> str:
+    if seconds is None or seconds < 0:
+        return "--"
+    seconds = int(seconds)
+    h, rem = divmod(seconds, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h}:{m:02d}:{s:02d}" if h else f"{m}:{s:02d}"
+
+
+def _hf_repo_id(model: str) -> str:
+    """HF repo id (``org/name``) from a ``-hf`` value such as ``org/name:quant``."""
+    return model.split(":", 1)[0]
+
+
+def _hf_quant(model: str) -> str:
+    parts = model.split(":", 1)
+    return parts[1] if len(parts) == 2 else ""
+
+
+def _hf_blobs_dir(model: str) -> Path:
+    """Path to the Hugging Face ``blobs`` dir that llama.cpp downloads into."""
+    hub = os.environ.get("HF_HUB_CACHE") or os.environ.get("HUGGINGFACE_HUB_CACHE")
+    if not hub:
+        home = os.environ.get("HF_HOME") or os.path.expanduser("~/.cache/huggingface")
+        hub = str(Path(home) / "hub")
+    repo_dir = "models--" + _hf_repo_id(model).replace("/", "--")
+    return Path(hub) / repo_dir / "blobs"
+
+
+def _hf_repo_gguf_files(model: str) -> list:
+    """Best-effort list of GGUF files in the repo: ``[{oid, name, size}, ...]``.
+
+    Returns an empty list on any network/API failure so the caller can fall
+    back to inferring progress from the log.
+    """
+    repo = _hf_repo_id(model)
+    url = f"{_HF_API_BASE}/api/models/{repo}/tree/main"
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "run.py/1.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            data = json.loads(resp.read().decode("utf-8", "replace"))
+    except Exception:
+        return []
+    files = []
+    for item in data:
+        if not isinstance(item, dict):
+            continue
+        name = item.get("path", "")
+        if not name.lower().endswith(".gguf"):
+            continue
+        lfs = item.get("lfs") or {}
+        oid = lfs.get("oid") or item.get("oid") or ""
+        size = lfs.get("size") or item.get("size") or 0
+        if oid:
+            files.append({"oid": oid, "name": name, "size": int(size)})
+    return files
+
+
+def _select_primary_file(files: list, quant: str):
+    """Pick the GGUF file llama.cpp will fetch for the given quant (best effort)."""
+    if not files:
+        return None
+    q = quant.strip().lower()
+    if q:
+        matches = [f for f in files if q in f["name"].lower()]
+        if matches:
+            return max(matches, key=lambda f: f["size"])
+    return max(files, key=lambda f: f["size"])
+
+
+def _largest_blob_size(blobs_dir: Path) -> int:
+    """Largest file currently in the blobs dir (0 if none / missing)."""
+    try:
+        if not blobs_dir.exists():
+            return 0
+        best = 0
+        for p in blobs_dir.iterdir():
+            if p.is_file():
+                s = p.stat().st_size
+                if s > best:
+                    best = s
+        return best
+    except Exception:
+        return 0
+
+
+def _read_log_tail(log_path: Path, nbytes: int) -> str:
+    try:
+        if not log_path.exists():
+            return ""
+        with open(log_path, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - nbytes))
+            return f.read().decode("utf-8", "replace")
+    except Exception:
+        return ""
+
+
+def _latest_download_progress(log_path: Path):
+    """Parse the newest llama.cpp progress line. Returns ``(pct, eta_str)`` or ``(None, None)``."""
+    data = _read_log_tail(log_path, 65536)
+    matches = re.finditer(
+        r"(\d+\.\d+)%\s+t=(\d+):(\d+):(\d+)\s+ETA=(\d+):(\d+):(\d+)", data
+    )
+    last = None
+    for m in matches:
+        last = m
+    if last is None:
+        return None, None
+    pct = float(last.group(1))
+    eta = f"{int(last.group(5)):02d}:{last.group(6)}:{last.group(7)}"
+    return pct, eta
+
+
+def _log_indicates_loaded(log_path: Path) -> bool:
+    data = _read_log_tail(log_path, 262144)
+    return ("model loaded" in data) or ("listening on" in data)
+
+
+def _log_indicates_download_failed(log_path: Path) -> bool:
+    data = _read_log_tail(log_path, 262144)
+    return "download failed" in data
+
+
+def _render_bar(label: str, pct: float, size_str: str, speed_str: str, eta_str: str) -> None:
+    frac = max(0.0, min(1.0, pct / 100.0))
+    filled = int(round(frac * _BAR_WIDTH))
+    bar = "#" * filled + "-" * (_BAR_WIDTH - filled)
+    line = (
+        f"\r[dl] {label[:24]:24} {pct:5.1f}% "
+        f"[{bar}] {size_str:<16} {speed_str:>10} ETA {eta_str:<8}"
+    )
+    print(line, end="", flush=True)
+
+
+def _ensure_model_ready(model: str, log_path: Path) -> bool:
+    """
+    Wait for the model file to be present in the Hugging Face cache, showing a
+    live progress bar (percent / speed / ETA) while llama.cpp downloads it.
+
+    Returns True once the file is complete (or already cached) and False on a
+    failure / stall / the server process dying.
+    """
+    blobs_dir = _hf_blobs_dir(model)
+    primary = _select_primary_file(_hf_repo_gguf_files(model), _hf_quant(model))
+    primary_oid = primary["oid"] if primary else None
+    primary_size = primary["size"] if primary else 0
+    label = (primary["name"] if primary else _hf_repo_id(model))[:24]
+
+    # Already fully cached? Nothing to show.
+    if primary_oid and _largest_blob_size(blobs_dir) >= primary_size and primary_size > 0:
+        print(f"[run] Model already cached ({label}) -- no download needed.")
+        return True
+
+    print(f"[run] Downloading model '{label}' from Hugging Face ...")
+
+    start = time.monotonic()
+    last_growth_t = start
+    first_byte = False
+    last_size = 0
+    last_speed = 0.0
+    speed_ema = 0.0
+    stall_warned = False
+    total = 0
+
+    while True:
+        now = time.monotonic()
+        elapsed = now - start
+
+        # Hard cap on the whole download.
+        if elapsed > _DL_TOTAL_TIMEOUT_S:
+            print(f"\n[dl] Giving up after {int(elapsed // 60)} min (no completion detected).")
+            return False
+
+        size = _largest_blob_size(blobs_dir)
+
+        # Track growth -> download speed (smoothed) and stall clock.
+        if size > 0 and not first_byte:
+            first_byte = True
+            last_growth_t = now
+        if size > last_size:
+            dt = now - last_growth_t if (now - last_growth_t) > 0 else 1.0
+            inst = (size - last_size) / dt
+            speed_ema = inst if speed_ema == 0.0 else (0.8 * speed_ema + 0.2 * inst)
+            last_growth_t = now
+            stall_warned = False
+        last_size = size
+
+        log_pct, log_eta = _latest_download_progress(log_path)
+
+        # Resolve total size: known from API, else estimate from log percent.
+        if primary_size > 0:
+            total = primary_size
+            pct = 100.0 * size / total if total else 0.0
+            eta = (total - size) / speed_ema if speed_ema > 0 else None
+            eta_str = _fmt_eta(eta)
+        elif log_pct and log_pct > 0 and size > 0:
+            total = size / (log_pct / 100.0)
+            pct = log_pct
+            eta_str = log_eta
+        else:
+            total = 0
+            pct = 0.0
+            eta_str = log_eta or "--"
+
+        speed_str = f"{_human_bytes(speed_ema)}/s" if speed_ema > 0 else "  --  "
+        size_str = (
+            f"{_human_bytes(size)}/{_human_bytes(total)}"
+            if total
+            else f"{_human_bytes(size)} (size?)"
+        )
+        _render_bar(label, pct, size_str, speed_str, eta_str)
+
+        # Completion / failure signals.
+        if _log_indicates_loaded(log_path):
+            print(f"\n[dl] Model ready: {label}")
+            return True
+        if primary_oid and primary_size and size >= primary_size:
+            print(f"\n[dl] Download complete: {label} ({_human_bytes(size)})")
+            return True
+        if _log_indicates_download_failed(log_path):
+            print(f"\n[dl] llama-server reported a download failure -- see {log_path}")
+            return False
+        # llama.cpp reports ~100% (also covers the API-unreachable case).
+        if log_pct is not None and log_pct >= 99.9 and size > 0:
+            print(f"\n[dl] Download complete: {label} ({_human_bytes(size)})")
+            return True
+        # Fallback: a large file that has stopped growing is treated as done.
+        if (not primary_size) and first_byte and size >= _DL_MIN_DONE_SIZE \
+                and (now - last_growth_t) >= _DL_STABLE_DONE_S:
+            print(f"\n[dl] Download complete: {label} ({_human_bytes(size)})")
+            return True
+
+        # Stall detection.
+        if first_byte:
+            idle = now - last_growth_t
+            if idle > _DL_STALL_FAIL_S:
+                print(f"\n[dl] Download stuck for {int(idle // 60)} min at {_human_bytes(size)} -- aborting.")
+                return False
+            if idle > _DL_STALL_WARN_S and not stall_warned:
+                print(f"\n[dl] ... download appears stalled (no growth for {int(idle)}s)")
+                stall_warned = True
+
+        time.sleep(0.5)
+
+# --------------------------------------------------------------------------- #
 #  Commands
 # --------------------------------------------------------------------------- #
 
@@ -137,7 +413,7 @@ def main() -> None:
         extra_env={"GITHUB_TOKEN": os.environ["GITHUB_TOKEN"]},
     )
     _run_blocking("chmod +x ./llama-server")
-    _run_blocking("chmod +x ./llama-bench")
+#    _run_blocking("chmod +x ./llama-bench")
 
     pids = {}
 
@@ -176,6 +452,11 @@ def main() -> None:
         "--metrics",
     ]
     pids["llama"] = _run_detached(llama_cmd, LLAMA_LOG, "llama-server")
+
+    # 2. First-run model download: show live progress (percent / speed / ETA)
+    if not _ensure_model_ready(MODEL, LLAMA_LOG):
+        stop()
+        sys.exit(f"[ERROR] model download failed or stalled -- see {LLAMA_LOG}")
 
     # # 3. Start WhatsApp Python Server
     # wa_py_cmd = f"python -m nbchat.channels.whatsapp_server"
