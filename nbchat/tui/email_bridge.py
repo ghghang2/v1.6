@@ -271,12 +271,10 @@ class EmailBridge:
         # Log to terminal so the user sees it in the TUI.
         p = getattr(self._agent, "palette", None)
         if p is not None:
-            import sys
-            sys.stdout.write(p.magenta(f"  [supervisor] {question[:60]}\n"))
+            self._agent._write(p.magenta(f"  [supervisor] {question[:60]}\n"), end="")
             for line in answer.splitlines() or [""]:
-                sys.stdout.write("  " + line + "\n")
-            sys.stdout.write("\n")
-            sys.stdout.flush()
+                self._agent._write("  " + line + "\n", end="")
+            self._agent._write("\n", end="")
 
         # Record + mark read.
         self._seen.add(msg.message_id)
