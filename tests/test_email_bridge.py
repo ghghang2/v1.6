@@ -231,7 +231,7 @@ def test_poll_injects_matching_email_only():
                return_value=[non_matching, matching]), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
          patch.object(agent, "send_from_email", side_effect=fake_send) as mock_send:
-        bridge._poll_once()
+        _poll_bridge(bridge)
 
     # Agent was called exactly once — for the matching email only.
     mock_send.assert_called_once()
@@ -257,7 +257,7 @@ def test_poll_injects_nothing_when_no_match():
                return_value=[random_mail]), \
          patch("nbchat.core.email_inbox.mark_read"), \
          patch.object(agent, "send_from_email") as mock_send:
-        bridge._poll_once()
+        _poll_bridge(bridge)
 
     mock_send.assert_not_called()
 
@@ -296,7 +296,7 @@ def test_bridge_dedup_by_message_id():
     with patch("nbchat.core.email_inbox.fetch_unseen", return_value=[msg]), \
          patch("nbchat.core.email_inbox.mark_read"), \
          patch.object(agent, "send_from_email") as mock_send:
-        bridge._poll_once()
+        _poll_bridge(bridge)
         mock_send.assert_not_called()
 
 
@@ -363,6 +363,19 @@ def _bridge(session_start=None):
     if session_start is not None:
         kw["session_start"] = session_start
     return EmailBridge(agent, **kw)
+
+
+def _poll_bridge(bridge):
+    """Run one full detect + process cycle synchronously (for tests).
+
+    Replaces the old ``_poll_bridge(bridge)`` which did detection and
+    processing in a single blocking call.  Now detection and processing
+    are separate threads, so tests drive them manually.
+    """
+    bridge._detect_and_enqueue()
+    while not bridge._queue.empty():
+        msg = bridge._queue.get_nowait()
+        bridge._process_email(msg)
 
 
 def test_is_fresh_none_date_treated_as_fresh():
@@ -460,7 +473,7 @@ def test_poll_skips_stale_matching_email():
     with patch("nbchat.core.email_inbox.fetch_unseen", return_value=[stale]), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
          patch.object(bridge._agent, "send_from_email") as mock_send:
-        bridge._poll_once()
+        _poll_bridge(bridge)
 
     mock_send.assert_not_called()      # not answered
     mock_mr.assert_not_called()        # not forced to read
@@ -478,7 +491,7 @@ def test_poll_injects_fresh_matching_email_and_marks_read():
     with patch("nbchat.core.email_inbox.fetch_unseen", return_value=[fresh]), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
          patch.object(bridge._agent, "send_from_email", return_value="ok") as mock_send:
-        bridge._poll_once()
+        _poll_bridge(bridge)
 
     mock_send.assert_called_once()
     mock_mr.assert_called_once()       # marked read after successful inject
@@ -503,7 +516,7 @@ def test_poll_stale_and_fresh_together():
                return_value=[stale, fresh]), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
          patch.object(bridge._agent, "send_from_email", return_value="ok") as mock_send:
-        bridge._poll_once()
+        _poll_bridge(bridge)
 
     mock_send.assert_called_once()
     # Only the fresh email is marked read (the stale one is left for the user).

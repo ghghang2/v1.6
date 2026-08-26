@@ -102,7 +102,7 @@ _HIGH_INVALIDATION_THRESHOLD: float = float(_cfg["high_invalidation_threshold"])
 
 # Email parameters
 SMTP_PORT: int = int(_cfg["smtp_port"])
-EMAIL_POLL_INTERVAL: int = int(_cfg.get("email_poll_interval", 10))
+EMAIL_POLL_INTERVAL: int = int(_cfg.get("email_poll_interval", 3))
 EMAIL_AUTO_REPLY: bool = bool(_cfg.get("email_auto_reply", True))
 
 # Supervisor parameters

@@ -37,6 +37,7 @@ Run with:  ``python -m nbchat.tui --email``
 from __future__ import annotations
 
 import logging
+import queue
 import threading
 from datetime import datetime, timedelta, timezone
 
@@ -69,6 +70,8 @@ class EmailBridge:
         self._stop = threading.Event()
         self._seen: set[str] = set()   # in-memory Message-ID dedupe (belt & suspenders)
         self._thread: threading.Thread | None = None
+        self._worker: threading.Thread | None = None
+        self._queue: "queue.Queue" = queue.Queue()
         # Timestamp of this chat session's start.  The bridge only injects
         # mail sent at/after this moment, so pre-existing unread mail
         # (days/weeks old) is never answered.  When no explicit
@@ -91,10 +94,14 @@ class EmailBridge:
             return
         self._stop.clear()
         self._thread = threading.Thread(
-            target=self._loop, name="nbchat-email-bridge", daemon=True
+            target=self._loop, name="nbchat-email-detect", daemon=True
+        )
+        self._worker = threading.Thread(
+            target=self._worker_loop, name="nbchat-email-worker", daemon=True
         )
         self._thread.start()
-        _log.info("email bridge started (poll every %ss, auto_reply=%s)",
+        self._worker.start()
+        _log.info("email bridge started (detect every %ss, auto_reply=%s)",
                   self._poll_interval, self._auto_reply)
 
     def stop(self, timeout: float = 5.0) -> None:
@@ -102,11 +109,17 @@ class EmailBridge:
         if self._thread:
             self._thread.join(timeout=timeout)
             self._thread = None
+        if self._worker:
+            self._worker.join(timeout=timeout)
+            self._worker = None
         _log.info("email bridge stopped")
 
     @property
     def running(self) -> bool:
-        return bool(self._thread and self._thread.is_alive())
+        return bool(
+            self._thread and self._thread.is_alive()
+            and self._worker and self._worker.is_alive()
+        )
 
     # ── Poll loop ──────────────────────────────────────────────────────
 
@@ -120,11 +133,13 @@ class EmailBridge:
             # Event.wait lets us stop promptly and is interruptible.
             self._stop.wait(self._poll_interval)
 
-    def _poll_once(self) -> None:
-        """Fetch unseen mail and inject matching messages into the chat.
+    def _detect_and_enqueue(self) -> None:
+        """Fetch unseen mail, filter, and enqueue matching messages.
 
-        Only emails from our own address with 'nbchat' in the subject are
-        processed; all others are marked read and silently skipped.
+        This runs in the detector thread and must be fast.  It does NOT
+        call ``send_from_email`` (that is the worker's job).  Only emails
+        from our own address with 'nbchat' in the subject are enqueued;
+        all others are marked read and silently skipped.
         """
         for msg in email_inbox.fetch_unseen(limit=20):
             if self._stop.is_set():
@@ -147,36 +162,61 @@ class EmailBridge:
             if msg.message_id in self._seen:
                 email_inbox.mark_read(msg.uid)
                 continue
-
-            # Route supervisor questions: subject contains "supervisor".
-            if self._supervisor is not None and "supervisor" in msg.subject.lower():
-                self._handle_supervisor_email(msg)
-                continue
-
-            # Inject into the chat stream (blocks until the turn completes).
-            reply = self._agent.send_from_email(
-                msg.from_addr, msg.subject, msg.body
-            )
-
-            # Record as handled, then mark read (only after successful inject).
+            # Mark as seen immediately to prevent double-enqueue.
             self._seen.add(msg.message_id)
-            try:
-                email_inbox.mark_read(msg.uid)
-            except Exception as exc:
-                _log.warning("failed to mark read %s: %s", msg.uid, exc)
+            self._queue.put(msg)
+            _log.info("enqueued email: %r from %s", msg.subject, msg.from_addr)
 
-            # Optionally reply to the sender by email.
-            if self._auto_reply and reply:
-                try:
-                    email_smtp.send(
-                        to=self._parse_addr(msg.from_addr) or msg.from_addr,
-                        subject=f"Re: {msg.subject} ({OUTBOUND_MARKER})",
-                        body=reply,
-                    )
-                    _log.info("auto-replied to %s", msg.from_addr)
-                except Exception as exc:
-                    _log.warning("auto-reply failed: %s: %s",
-                                 type(exc).__name__, exc)
+    def _worker_loop(self) -> None:
+        """Processing loop: dequeue and process emails one at a time.
+
+        Runs in the worker thread.  Each email is processed sequentially
+        via ``agent.send_from_email`` (which holds ``_send_lock`` for the
+        entire LLM turn).  The detector thread keeps running independently,
+        so new emails are always picked up within one poll interval even
+        while the worker is busy.
+        """
+        while not self._stop.is_set():
+            try:
+                msg = self._queue.get(timeout=1)
+            except queue.Empty:
+                continue
+            try:
+                self._process_email(msg)
+            except Exception as exc:
+                _log.warning("email processing failed: %s: %s",
+                             type(exc).__name__, exc)
+
+    def _process_email(self, msg) -> None:
+        """Process a single email: inject into chat, mark read, auto-reply."""
+        # Route supervisor questions: subject contains "supervisor".
+        if self._supervisor is not None and "supervisor" in msg.subject.lower():
+            self._handle_supervisor_email(msg)
+            return
+
+        # Inject into the chat stream (blocks until the turn completes).
+        reply = self._agent.send_from_email(
+            msg.from_addr, msg.subject, msg.body
+        )
+
+        # Mark read (only after successful inject).
+        try:
+            email_inbox.mark_read(msg.uid)
+        except Exception as exc:
+            _log.warning("failed to mark read %s: %s", msg.uid, exc)
+
+        # Optionally reply to the sender by email.
+        if self._auto_reply and reply:
+            try:
+                email_smtp.send(
+                    to=self._parse_addr(msg.from_addr) or msg.from_addr,
+                    subject=f"Re: {msg.subject} ({OUTBOUND_MARKER})",
+                    body=reply,
+                )
+                _log.info("auto-replied to %s", msg.from_addr)
+            except Exception as exc:
+                _log.warning("auto-reply failed: %s: %s",
+                             type(exc).__name__, exc)
 
     # ── Helpers ──────────────────────────────────────────────────────
 
