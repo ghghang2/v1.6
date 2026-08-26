@@ -126,7 +126,7 @@ class EmailBridge:
     def _loop(self) -> None:
         while not self._stop.is_set():
             try:
-                self._poll_once()
+                self._detect_and_enqueue()
             except Exception as exc:  # one bad poll must not kill the bridge
                 _log.warning("email poll failed: %s: %s",
                              type(exc).__name__, exc)
