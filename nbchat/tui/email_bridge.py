@@ -134,14 +134,15 @@ class EmailBridge:
             self._stop.wait(self._poll_interval)
 
     def _detect_and_enqueue(self) -> None:
-        """Fetch unseen mail, filter, and enqueue matching messages.
+        """Fast header-only poll: peek unseen mail, filter, fetch bodies
+        for matches, and enqueue.
 
         This runs in the detector thread and must be fast.  It does NOT
         call ``send_from_email`` (that is the worker's job).  Only emails
         from our own address with 'nbchat' in the subject are enqueued;
         all others are marked read and silently skipped.
         """
-        for msg in email_inbox.fetch_unseen(limit=20):
+        for msg in email_inbox.peek_unseen(limit=20):
             if self._stop.is_set():
                 break
             # Only process deliberate user commands: from our own address
@@ -164,6 +165,12 @@ class EmailBridge:
                 continue
             # Mark as seen immediately to prevent double-enqueue.
             self._seen.add(msg.message_id)
+            # Fetch the full body now (only for matching, fresh emails).
+            try:
+                msg.body = email_inbox.fetch_body(msg.uid)
+            except Exception as exc:
+                _log.warning("failed to fetch body for %s: %s", msg.uid, exc)
+                continue
             self._queue.put(msg)
             _log.info("enqueued email: %r from %s", msg.subject, msg.from_addr)
 

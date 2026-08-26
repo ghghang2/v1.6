@@ -162,6 +162,90 @@ def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
             pass
 
 
+def peek_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
+    """Fast header-only fetch of UNSEEN messages.
+
+    Returns ``EmailMessage`` objects with ``body=""`` — the caller should
+    use :func:`fetch_body` to retrieve the full body for messages that
+    pass the filter.  This is dramatically faster than :func:`fetch_unseen`
+    because it downloads only the ``From``, ``Subject``, ``Date`` and
+    ``Message-ID`` headers (~200 bytes each) instead of the full RFC822
+    payload (often 10-50 KB each).
+    """
+    import os
+    pw = os.getenv("GHG_APP_PASSWORD")
+    if not pw:
+        raise RuntimeError("GHG_APP_PASSWORD env variable not set")
+
+    host = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+    try:
+        host.login("ghghang2@gmail.com", pw)
+        status, _ = host.select(box, readonly=True)
+        if status != "OK":
+            raise RuntimeError(f"IMAP SELECT failed for {box!r}: {status}")
+
+        status, data = host.uid("SEARCH", None, "UNSEEN")
+        if status != "OK":
+            raise RuntimeError(f"IMAP SEARCH failed: {status}")
+        ids = data[0].split()
+        if not ids:
+            return []
+
+        results: list[EmailMessage] = []
+        for uid in ids[-limit:]:
+            status, fetched = host.uid(
+                "FETCH", uid,
+                "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])"
+            )
+            if status != "OK" or not fetched:
+                continue
+            raw = fetched[0][1]
+            msg = email.message_from_bytes(raw)
+            results.append(EmailMessage(
+                message_id=msg.get("Message-ID", f"<{uid}@gmail.com>"),
+                from_addr=_decode_header(msg.get("From", "")),
+                subject=_decode_header(msg.get("Subject", "(no subject)")),
+                body="",  # not fetched yet — use fetch_body()
+                date=_parse_date(msg.get("Date")),
+                uid=uid.decode() if isinstance(uid, bytes) else str(uid),
+            ))
+        results.sort(key=lambda e: e.date or datetime.min.replace(tzinfo=timezone.utc))
+        return results
+    finally:
+        try:
+            host.logout()
+        except Exception:
+            pass
+
+
+def fetch_body(uid: str, box: str = "INBOX") -> str:
+    """Fetch the full body of a single message by IMAP UID.
+
+    Called only for messages that have already passed the bridge's
+    filter, so the cost is paid at most once per matching email.
+    """
+    import os
+    pw = os.getenv("GHG_APP_PASSWORD")
+    if not pw:
+        raise RuntimeError("GHG_APP_PASSWORD env variable not set")
+
+    host = imaplib.IMAP4_SSL("imap.gmail.com", 993)
+    try:
+        host.login("ghghang2@gmail.com", pw)
+        host.select(box, readonly=True)
+        status, fetched = host.uid("FETCH", uid, "(RFC822)")
+        if status != "OK" or not fetched:
+            return ""
+        raw = fetched[0][1]
+        msg = email.message_from_bytes(raw)
+        return _extract_body(msg)
+    finally:
+        try:
+            host.logout()
+        except Exception:
+            pass
+
+
 def mark_read(uid: str, box: str = "INBOX") -> None:
     """Mark a single message (by UID) as SEEN.
 

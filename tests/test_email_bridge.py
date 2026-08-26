@@ -5,6 +5,7 @@ connection.  Network calls (imaplib, smtplib) are monkey-patched.
 """
 from __future__ import annotations
 
+import os
 import json
 import threading
 from datetime import datetime, timedelta, timezone
@@ -264,8 +265,9 @@ def test_poll_injects_matching_email_only():
         captured["args"] = (sender, subject, body)
         return "hi there"
 
-    with patch("nbchat.core.email_inbox.fetch_unseen",
+    with patch("nbchat.core.email_inbox.peek_unseen",
                return_value=[non_matching, matching]), \
+         patch("nbchat.core.email_inbox.fetch_body", return_value="please say hi"), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
          patch.object(agent, "send_from_email", side_effect=fake_send) as mock_send:
         _poll_bridge(bridge)
@@ -290,7 +292,7 @@ def test_poll_injects_nothing_when_no_match():
         date=None, uid="30",
     )
 
-    with patch("nbchat.core.email_inbox.fetch_unseen",
+    with patch("nbchat.core.email_inbox.peek_unseen",
                return_value=[random_mail]), \
          patch("nbchat.core.email_inbox.mark_read"), \
          patch.object(agent, "send_from_email") as mock_send:
@@ -330,7 +332,7 @@ def test_bridge_dedup_by_message_id():
     # Simulate first injection
     bridge._seen.add(msg.message_id)
     # Verify it would be skipped
-    with patch("nbchat.core.email_inbox.fetch_unseen", return_value=[msg]), \
+    with patch("nbchat.core.email_inbox.peek_unseen", return_value=[msg]), \
          patch("nbchat.core.email_inbox.mark_read"), \
          patch.object(agent, "send_from_email") as mock_send:
         _poll_bridge(bridge)
@@ -539,7 +541,7 @@ def test_poll_skips_stale_matching_email():
         subject="nbchat: old command", body="do the old thing",
         date=datetime(2025, 6, 1, tzinfo=timezone.utc), uid="10",
     )
-    with patch("nbchat.core.email_inbox.fetch_unseen", return_value=[stale]), \
+    with patch("nbchat.core.email_inbox.peek_unseen", return_value=[stale]), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
          patch.object(bridge._agent, "send_from_email") as mock_send:
         _poll_bridge(bridge)
@@ -557,7 +559,8 @@ def test_poll_injects_fresh_matching_email_and_marks_read():
         subject="nbchat: new command", body="do the new thing",
         date=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc), uid="20",
     )
-    with patch("nbchat.core.email_inbox.fetch_unseen", return_value=[fresh]), \
+    with patch("nbchat.core.email_inbox.peek_unseen", return_value=[fresh]), \
+         patch("nbchat.core.email_inbox.fetch_body", return_value="do the new thing"), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
          patch.object(bridge._agent, "send_from_email", return_value="ok") as mock_send:
         _poll_bridge(bridge)
@@ -581,8 +584,9 @@ def test_poll_stale_and_fresh_together():
         subject="nbchat: fresh", body="new",
         date=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc), uid="31",
     )
-    with patch("nbchat.core.email_inbox.fetch_unseen",
+    with patch("nbchat.core.email_inbox.peek_unseen",
                return_value=[stale, fresh]), \
+         patch("nbchat.core.email_inbox.fetch_body", return_value="new"), \
          patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
          patch.object(bridge._agent, "send_from_email", return_value="ok") as mock_send:
         _poll_bridge(bridge)
@@ -590,3 +594,82 @@ def test_poll_stale_and_fresh_together():
     mock_send.assert_called_once()
     # Only the fresh email is marked read (the stale one is left for the user).
     mock_mr.assert_called_once_with("31")
+
+
+# ─── peek_unseen / fetch_body (mocked IMAP) ──────────────────────────────────
+
+
+def test_peek_unseen_returns_header_only_messages():
+    """peek_unseen returns EmailMessage objects with empty body."""
+    import email as em
+    raw_header = (
+        b"From: ghghang2@gmail.com\r\n"
+        b"Subject: nbchat: test\r\n"
+        b"Date: Thu, 27 Aug 2026 04:56:00 -0000\r\n"
+        b"Message-ID: <peek1@gmail.com>\r\n"
+        b"\r\n"
+    )
+
+    class FakeIMAP:
+        def __init__(self, *a, **kw): pass
+        def login(self, *a): pass
+        def select(self, *a, **kw): return ("OK", [b"1"])
+        def uid(self, cmd, *args):
+            if cmd == "SEARCH":
+                return ("OK", [b"100"])
+            if cmd == "FETCH":
+                return ("OK", [(b"100 (RFC822 {50}", raw_header)])
+        def logout(self): pass
+
+    with patch("imaplib.IMAP4_SSL", return_value=FakeIMAP()), \
+         patch.dict("os.environ", {"GHG_APP_PASSWORD": "test"}):
+        results = email_inbox.peek_unseen(limit=5)
+
+    assert len(results) == 1
+    assert results[0].body == ""
+    assert results[0].subject == "nbchat: test"
+    assert results[0].from_addr == "ghghang2@gmail.com"
+    assert results[0].uid == "100"
+    assert results[0].date is not None
+
+
+def test_peek_unseen_empty_inbox():
+    """peek_unseen returns empty list when no unseen messages."""
+    class FakeIMAP:
+        def __init__(self, *a, **kw): pass
+        def login(self, *a): pass
+        def select(self, *a, **kw): return ("OK", [b"0"])
+        def uid(self, cmd, *args):
+            if cmd == "SEARCH":
+                return ("OK", [b""])
+            return ("OK", [])
+        def logout(self): pass
+
+    with patch("imaplib.IMAP4_SSL", return_value=FakeIMAP()), \
+         patch.dict("os.environ", {"GHG_APP_PASSWORD": "test"}):
+        results = email_inbox.peek_unseen()
+
+    assert results == []
+
+
+def test_fetch_body_returns_extracted_text():
+    """fetch_body downloads the full message and extracts the body."""
+    import email as em
+    raw = (
+        b"From: a@b.com\r\nSubject: test\r\n"
+        b"Content-Type: text/plain\r\n\r\nHello body"
+    )
+
+    class FakeIMAP:
+        def __init__(self, *a, **kw): pass
+        def login(self, *a): pass
+        def select(self, *a, **kw): return ("OK", [b"1"])
+        def uid(self, cmd, *args):
+            return ("OK", [(b"1 (RFC822 {40}", raw)])
+        def logout(self): pass
+
+    with patch("imaplib.IMAP4_SSL", return_value=FakeIMAP()), \
+         patch.dict("os.environ", {"GHG_APP_PASSWORD": "test"}):
+        body = email_inbox.fetch_body("1")
+
+    assert body == "Hello body"
