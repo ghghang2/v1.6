@@ -13,8 +13,12 @@ Only emails that satisfy BOTH conditions are injected:
 2. Subject contains the string ``nbchat`` (case-insensitive).
 
 All other inbox traffic (colleagues, newsletters, auto-replies, etc.) is
-silently marked read and ignored.  This prevents the bridge from responding
-to random unread mail on startup.
+silently marked read and ignored.
+
+On top of that, only mail **sent since this chat session started** is ever
+injected.  Older unread mail is left completely untouched (not responded to,
+not marked read) so the user is never forced to read stale mail just to use
+the email bridge.
 
 Design
 ------
@@ -34,6 +38,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from datetime import datetime, timezone
 
 from nbchat.core import config
 from nbchat.core import email_inbox, email_smtp
@@ -50,6 +55,7 @@ class EmailBridge:
     def __init__(self, agent, *, auto_reply: bool | None = None,
                  poll_interval: int | None = None,
                  my_addr: str = email_smtp.LOGIN,
+                 session_start: datetime | None = None,
                  supervisor=None) -> None:
         self._agent = agent
         self._auto_reply = (
@@ -63,6 +69,11 @@ class EmailBridge:
         self._stop = threading.Event()
         self._seen: set[str] = set()   # in-memory Message-ID dedupe (belt & suspenders)
         self._thread: threading.Thread | None = None
+        # Timestamp of this chat session's start.  The bridge only injects
+        # mail sent at/after this moment, so pre-existing unread mail is
+        # never answered.  Defaults to "now" (the app constructs the bridge
+        # at session start); tests may pin it for determinism.
+        self._session_start = session_start or datetime.now(timezone.utc)
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
@@ -113,6 +124,15 @@ class EmailBridge:
             # with 'nbchat' in the subject.  Everything else is skipped.
             if not self._should_process(msg):
                 email_inbox.mark_read(msg.uid)
+                continue
+            # Only act on mail sent since this session started.  Older
+            # unread mail is left alone (NOT marked read, NOT responded to)
+            # so the user is never forced to read stale mail.
+            if not self._is_fresh(msg):
+                _log.info(
+                    "skipping email from before session start: %r",
+                    msg.subject,
+                )
                 continue
             # Dedup check (belt & suspenders for in-flight messages).
             if msg.message_id in self._seen:
@@ -210,6 +230,7 @@ class EmailBridge:
         1. NOT one of our own auto-replies (subject has no ``(nbchat-tui)``).
         2. Sent from our own address (``ghghang2@gmail.com``).
         3. Subject contains the string ``nbchat`` (case-insensitive).
+        4. Sent at or after this chat session started (see ``_is_fresh``).
 
         This ensures the bridge acts as a deliberate command channel —
         the user sends themselves an email with 'nbchat' in the subject,
@@ -231,6 +252,22 @@ class EmailBridge:
         if "nbchat" not in subj and "supervisor" not in subj:
             return False
         return True
+
+    def _is_fresh(self, msg) -> bool:
+        """True if *msg* was sent at or after this chat session started.
+
+        This is the guard that stops the bridge from answering **older
+        unread** mail that merely happens to match the filter.  A message
+        with no parseable ``Date`` is treated as fresh (we cannot prove it
+        is stale), so a legitimate command is never silently dropped; in
+        practice Gmail always populates the ``Date`` header.
+        """
+        if msg.date is None:
+            return True
+        msg_date = msg.date
+        if msg_date.tzinfo is None:
+            msg_date = msg_date.replace(tzinfo=timezone.utc)
+        return msg_date >= self._session_start
 
     @staticmethod
     def _parse_addr(from_header: str) -> str | None:

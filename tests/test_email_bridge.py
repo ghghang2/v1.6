@@ -352,3 +352,117 @@ def test_truncation_guard_finish_reason_length():
     finish_reason = "length"
     _truncated = (finish_reason == "length")
     assert _truncated
+
+
+# ── session-start gating (the stale-unread-mail fix) ─────────────────────────
+
+def _bridge(session_start=None):
+    from nbchat.tui.email_bridge import EmailBridge
+    agent = TerminalAgent(color=False)
+    kw = {"auto_reply": False, "poll_interval": 1}
+    if session_start is not None:
+        kw["session_start"] = session_start
+    return EmailBridge(agent, **kw)
+
+
+def test_is_fresh_none_date_treated_as_fresh():
+    """A message with no Date header is treated as fresh (never dropped)."""
+    bridge = _bridge(session_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    msg = email_inbox.EmailMessage(
+        message_id="<n@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat", body="hi", date=None, uid="1",
+    )
+    assert bridge._is_fresh(msg) is True
+
+
+def test_is_fresh_after_session_start():
+    bridge = _bridge(session_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    msg = email_inbox.EmailMessage(
+        message_id="<a@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat", body="hi",
+        date=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc), uid="2",
+    )
+    assert bridge._is_fresh(msg) is True
+
+
+def test_is_fresh_before_session_start():
+    bridge = _bridge(session_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    msg = email_inbox.EmailMessage(
+        message_id="<b@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat", body="hi",
+        date=datetime(2025, 12, 31, tzinfo=timezone.utc), uid="3",
+    )
+    assert bridge._is_fresh(msg) is False
+
+
+def test_is_fresh_naive_date_assumed_utc():
+    """A naive Date is compared as UTC against the (aware) session start."""
+    bridge = _bridge(session_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    msg = email_inbox.EmailMessage(
+        message_id="<c@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat", body="hi",
+        date=datetime(2025, 12, 31, 23, 0), uid="4",  # naive, before start
+    )
+    assert bridge._is_fresh(msg) is False
+
+
+def test_poll_skips_stale_matching_email():
+    """A matching email sent BEFORE session start is neither injected nor
+    marked read — the core of the stale-unread-mail fix."""
+    bridge = _bridge(session_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    stale = email_inbox.EmailMessage(
+        message_id="<stale@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: old command", body="do the old thing",
+        date=datetime(2025, 6, 1, tzinfo=timezone.utc), uid="10",
+    )
+    with patch("nbchat.core.email_inbox.fetch_unseen", return_value=[stale]), \
+         patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
+         patch.object(bridge._agent, "send_from_email") as mock_send:
+        bridge._poll_once()
+
+    mock_send.assert_not_called()      # not answered
+    mock_mr.assert_not_called()        # not forced to read
+
+
+def test_poll_injects_fresh_matching_email_and_marks_read():
+    """A matching email sent AFTER session start is injected and marked read
+    (once), so it is not answered again on later polls."""
+    bridge = _bridge(session_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    fresh = email_inbox.EmailMessage(
+        message_id="<fresh@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: new command", body="do the new thing",
+        date=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc), uid="20",
+    )
+    with patch("nbchat.core.email_inbox.fetch_unseen", return_value=[fresh]), \
+         patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
+         patch.object(bridge._agent, "send_from_email", return_value="ok") as mock_send:
+        bridge._poll_once()
+
+    mock_send.assert_called_once()
+    mock_mr.assert_called_once()       # marked read after successful inject
+    assert fresh.message_id in bridge._seen
+
+
+def test_poll_stale_and_fresh_together():
+    """When both a stale and a fresh matching email are present, only the
+    fresh one is injected; the stale one is left untouched."""
+    bridge = _bridge(session_start=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    stale = email_inbox.EmailMessage(
+        message_id="<s@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: stale", body="old",
+        date=datetime(2025, 6, 1, tzinfo=timezone.utc), uid="30",
+    )
+    fresh = email_inbox.EmailMessage(
+        message_id="<f@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: fresh", body="new",
+        date=datetime(2026, 1, 1, 12, 0, tzinfo=timezone.utc), uid="31",
+    )
+    with patch("nbchat.core.email_inbox.fetch_unseen",
+               return_value=[stale, fresh]), \
+         patch("nbchat.core.email_inbox.mark_read") as mock_mr, \
+         patch.object(bridge._agent, "send_from_email", return_value="ok") as mock_send:
+        bridge._poll_once()
+
+    mock_send.assert_called_once()
+    # Only the fresh email is marked read (the stale one is left for the user).
+    mock_mr.assert_called_once_with("31")
