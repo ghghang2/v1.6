@@ -136,11 +136,22 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
         elif not arg:
             print("usage: /sup <question>")
         else:
-            print(agent.palette.magenta(f"  [supervisor] asking: {arg}\n"))
-            answer = supervisor.ask(arg)
-            for line_ in answer.splitlines() or [""]:
-                print("  " + line_)
-            print()
+            p = agent.palette
+            print(p.magenta(f"  [supervisor] asking: {arg}"))
+            # Run the LLM call on a background thread so the main loop
+            # immediately returns to reading input.  The supervisor uses
+            # its own parallel slot (n_parallel=2) and never touches the
+            # assistant's send lock or history.
+            def _ask_and_print():
+                try:
+                    answer = supervisor.ask(arg)
+                except Exception as exc:
+                    answer = f"[supervisor error] {exc}"
+                for line_ in answer.splitlines() or [""]:
+                    print(p.magenta(f"  [supervisor] ") + line_)
+                print()
+            threading.Thread(target=_ask_and_print, daemon=True,
+                             name="nbchat-sup-ask").start()
     else:
         print(f"Unknown command: {cmd}  (try /help)")
     return False
@@ -280,25 +291,28 @@ def run(argv: list[str] | None = None) -> int:
         if not line:
             continue
 
-        # Mid-stream interjection: a turn is still running and the user typed
-        # a new message.  Stop the current turn and start a fresh one with the
-        # new message.  ``send_async`` serialises on the agent's send lock, so
-        # the new turn waits for the (now interrupted) turn to wind down, then
-        # runs the user's redirect — no message is lost.
-        if turn_thread is not None and turn_thread.is_alive():
-            agent.interrupt()
-            print("\n" + agent.palette.yellow(
-                "[redirecting \u2014 stopping current response]"))
-            turn_thread = agent.send_async(line)
-            agent.remember_session(agent.session_id)
-            # Do NOT block: keep reading so the user can interject again.
-            continue
-
-        # No turn in flight: idle prompt loop.
+        # Slash commands are ALWAYS handled as commands, even mid-stream.
+        # This is how the user talks to the supervisor (/sup) or manages
+        # sessions (/new, /sessions, etc.) without interrupting the
+        # assistant's in-flight work.
         if line.startswith("/"):
             if handle_command(agent, line, supervisor=supervisor):
                 print("Bye.")
                 break
+            continue
+
+        # Mid-stream interjection: a turn is still running and the user typed
+        # plain text (not a command).  Stop the current turn and start a fresh
+        # one with the new message.  ``send_async`` serialises on the agent's
+        # send lock, so the new turn waits for the (now interrupted) turn to
+        # wind down, then runs the user's redirect — no message is lost.
+        if turn_thread is not None and turn_thread.is_alive():
+            agent.interrupt()
+            print("\n" + agent.palette.yellow(
+                "[redirecting — stopping current response]"))
+            turn_thread = agent.send_async(line)
+            agent.remember_session(agent.session_id)
+            # Do NOT block: keep reading so the user can interject again.
             continue
 
         turn_thread = agent.send_async(line)
