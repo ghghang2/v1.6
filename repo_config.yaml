@@ -105,6 +105,15 @@ smtp_port: 587
 email_poll_interval: 10      # seconds between IMAP polls when --email is on
 email_auto_reply: true       # send the agent's reply back to the sender
 
+# Supervisor — a second, always-on LLM instance on the server's 2nd
+# parallel slot. It answers state questions (via /sup or 'nbchat-sup'
+# email) and periodically reviews the assistant's work, interjecting a
+# one-line correction when it believes the assistant is off track.
+supervisor_enabled: false    # default off; also gated by the --supervisor flag
+supervisor_interval: 60      # seconds between watchdog reviews
+supervisor_cooldown: 300     # min seconds between two interjections
+supervisor_max_output_tokens: 512
+
 # UI parameters
 max_visible_widgets: 20
 

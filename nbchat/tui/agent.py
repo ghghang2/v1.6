@@ -19,6 +19,7 @@ from typing import List, Tuple
 from nbchat.core import config
 from nbchat.core import db
 from nbchat.core import compressor as comp
+from nbchat.core.supervisor import InterjectionQueue
 from nbchat.ui.context_manager import ContextMixin, ImportanceTracker
 from nbchat.ui.conversation import ConversationMixin
 from nbchat.tui.colors import Palette
@@ -63,6 +64,14 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         self._stop_event = threading.Event()
         self._history_lock = threading.Lock()
         self._tool_running = False
+        # True while a conversation turn (terminal or injected email) is
+        # running the agentic loop.  The supervisor watchdog uses this to
+        # decide whether the assistant is mid-turn.
+        self._turn_active = False
+        # Supervisor interjection queue — the supervisor pushes corrective
+        # instructions here; the conversation loop drains them at safe points
+        # (top of each tool-turn) and injects them as user messages.
+        self._interjection_queue = InterjectionQueue()
         # Serializes conversation turns so a terminal send and an injected
         # email turn never run the LLM loop concurrently (shared history).
         self._send_lock = threading.Lock()
@@ -168,8 +177,33 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         db.log_message(self.session_id, "user", text)
         printer(text)
 
-        self._process_conversation_turn()
+        self._turn_active = True
+        try:
+            self._process_conversation_turn()
+        finally:
+            self._turn_active = False
         return self._last_response
+
+    @property
+    def busy(self) -> bool:
+        """True while a conversation turn is running the agentic loop."""
+        return self._turn_active
+
+    def interject(self, text: str) -> None:
+        """Queue a supervisor interjection for the next safe point.
+
+        The text is placed on the interjection queue.  The conversation
+        loop drains it at the top of the next tool-turn and injects it
+        as a user message.  Safe to call from any thread.
+        """
+        self._interjection_queue.push(text)
+
+    def drain_interjections(self) -> list[str]:
+        """Drain all pending supervisor interjections.
+
+        Called by the conversation loop at the top of each tool-turn.
+        """
+        return self._interjection_queue.drain()
 
     # ── Terminal output hooks (ConversationMixin interface) ────────────────
 

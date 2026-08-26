@@ -50,6 +50,15 @@ class ConversationMixin:
     def _on_stream_complete(self, content: str, tool_calls: list | None) -> None: pass
     def _append(self, widget) -> None: pass
     def _refresh_monitoring_panel(self) -> None: pass
+    def drain_interjections(self) -> list:
+        """Return pending supervisor interjections (empty by default).
+
+        Agents wired to a supervisor override this to drain their
+        interjection queue.  The conversation loop calls it at the top of
+        each tool-turn (a safe point) and injects the results as user
+        messages.
+        """
+        return []
 
     # ── Entry point ───────────────────────────────────────────────────────
 
@@ -84,6 +93,20 @@ class ConversationMixin:
             if self._stop_event.is_set():
                 mon.flush_session_monitor(self.session_id, db)
                 break
+
+            # ── Drain supervisor interjections (safe point) ──────────
+            # The supervisor may have queued corrective instructions while
+            # we were streaming / running tools.  We inject them here — at
+            # the top of a turn, before the next LLM call — so we never
+            # mutate the message list mid-stream.
+            _interjections = self.drain_interjections()
+            for _ij in _interjections:
+                _log.info("injecting supervisor interjection: %.120s", _ij)
+                self._on_agent_message(f"[supervisor] {_ij}")
+                with self._history_lock:
+                    self.history.append(("user", _ij, "", "", "", 0))
+                db.log_message(self.session_id, "user", _ij)
+                messages.append({"role": "user", "content": _ij})
 
             volatile_len = (
                 len(messages[1]["content"])

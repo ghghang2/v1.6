@@ -49,7 +49,8 @@ class EmailBridge:
 
     def __init__(self, agent, *, auto_reply: bool | None = None,
                  poll_interval: int | None = None,
-                 my_addr: str = email_smtp.LOGIN) -> None:
+                 my_addr: str = email_smtp.LOGIN,
+                 supervisor=None) -> None:
         self._agent = agent
         self._auto_reply = (
             config.EMAIL_AUTO_REPLY if auto_reply is None else auto_reply
@@ -58,6 +59,7 @@ class EmailBridge:
             config.EMAIL_POLL_INTERVAL if poll_interval is None else poll_interval
         )
         self._my_addr = my_addr
+        self._supervisor = supervisor
         self._stop = threading.Event()
         self._seen: set[str] = set()   # in-memory Message-ID dedupe (belt & suspenders)
         self._thread: threading.Thread | None = None
@@ -117,6 +119,11 @@ class EmailBridge:
                 email_inbox.mark_read(msg.uid)
                 continue
 
+            # Route supervisor questions: subject contains "supervisor".
+            if self._supervisor is not None and "supervisor" in msg.subject.lower():
+                self._handle_supervisor_email(msg)
+                continue
+
             # Inject into the chat stream (blocks until the turn completes).
             reply = self._agent.send_from_email(
                 msg.from_addr, msg.subject, msg.body
@@ -143,6 +150,49 @@ class EmailBridge:
                                  type(exc).__name__, exc)
 
     # ── Helpers ──────────────────────────────────────────────────────
+
+    def _handle_supervisor_email(self, msg) -> None:
+        """Answer a supervisor question by email.
+
+        The email body is treated as the question.  The supervisor gathers
+        the live state snapshot and returns an answer, which is emailed back
+        to the sender (if auto-reply is on) and logged to the terminal.
+        """
+        question = msg.body.strip() or msg.subject
+        _log.info("supervisor email question from %s: %s",
+                  msg.from_addr, question[:80])
+
+        answer = self._supervisor.ask(question)
+
+        # Log to terminal so the user sees it in the TUI.
+        p = getattr(self._agent, "palette", None)
+        if p is not None:
+            import sys
+            sys.stdout.write(p.magenta(f"  [supervisor] {question[:60]}\n"))
+            for line in answer.splitlines() or [""]:
+                sys.stdout.write("  " + line + "\n")
+            sys.stdout.write("\n")
+            sys.stdout.flush()
+
+        # Record + mark read.
+        self._seen.add(msg.message_id)
+        try:
+            email_inbox.mark_read(msg.uid)
+        except Exception as exc:
+            _log.warning("failed to mark read %s: %s", msg.uid, exc)
+
+        # Optionally reply by email.
+        if self._auto_reply:
+            try:
+                email_smtp.send(
+                    to=self._parse_addr(msg.from_addr) or msg.from_addr,
+                    subject=f"Re: {msg.subject} ({OUTBOUND_MARKER})",
+                    body=answer,
+                )
+                _log.info("supervisor auto-replied to %s", msg.from_addr)
+            except Exception as exc:
+                _log.warning("supervisor auto-reply failed: %s: %s",
+                             type(exc).__name__, exc)
 
     def _is_outbound(self, msg) -> bool:
         """True if this is one of our own auto-replies (avoid self-loops).
@@ -174,7 +224,11 @@ class EmailBridge:
         if not from_addr or from_addr.lower() != self._my_addr.lower():
             return False
         # Must have 'nbchat' in the subject.
-        if "nbchat" not in msg.subject.lower():
+        # 'nbchat' routes to the assistant; 'supervisor' routes to the
+        # supervisor (when one is attached).  Either keyword is a deliberate
+        # command from the user's own address.
+        subj = msg.subject.lower()
+        if "nbchat" not in subj and "supervisor" not in subj:
             return False
         return True
 

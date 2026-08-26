@@ -39,6 +39,7 @@ _HELP = """Commands
   /model             Show the active model and server.
   /clear             Clear the screen.
   /quit              Exit (Ctrl+C / Ctrl+D also work).
+  /sup <question>    Ask the supervisor about system state (requires --supervisor).
 
 Tips
   • Type a normal message and press Enter to chat; the reply streams in live.
@@ -76,7 +77,7 @@ def print_banner(agent: TerminalAgent, server_up: bool) -> None:
 
 # ── Slash commands ─────────────────────────────────────────────────────────
 
-def handle_command(agent: TerminalAgent, line: str) -> bool:
+def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
     """Handle a slash command.  Returns True if the caller should exit."""
     parts = line.split(None, 1)
     cmd = parts[0].lower()
@@ -125,6 +126,18 @@ def handle_command(agent: TerminalAgent, line: str) -> bool:
         print(f"session {agent.session_id}")
     elif cmd == "/clear":
         sys.stdout.write("\033[2J\033[H")
+    elif cmd == "/sup":
+        if supervisor is None:
+            print(agent.palette.yellow(
+                "  ! Supervisor is not running (start with --supervisor)."))
+        elif not arg:
+            print("usage: /sup <question>")
+        else:
+            print(agent.palette.magenta(f"  [supervisor] asking: {arg}\n"))
+            answer = supervisor.ask(arg)
+            for line_ in answer.splitlines() or [""]:
+                print("  " + line_)
+            print()
     else:
         print(f"Unknown command: {cmd}  (try /help)")
     return False
@@ -168,6 +181,9 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-auto-reply", action="store_true",
                         help="with --email: do NOT email the agent's reply "
                              "back to the sender")
+    parser.add_argument("--supervisor", action="store_true",
+                        help="start the always-on supervisor watchdog "
+                             "(uses the second parallel slot)")
     args = parser.parse_args(argv)
 
     up = server_ok()
@@ -188,6 +204,17 @@ def run(argv: list[str] | None = None) -> int:
 
     print_banner(agent, up)
 
+    # Supervisor: always-on watchdog on the second parallel slot.
+    supervisor = None
+    if args.supervisor or config.SUPERVISOR_ENABLED:
+        from nbchat.core.supervisor import create_supervisor
+        supervisor = create_supervisor(agent)
+        supervisor.start()
+        p = agent.palette
+        print(p.magenta("  supervisor ")
+              + f"ACTIVE (review every {supervisor._interval}s, "
+                f"cooldown {supervisor._cooldown}s)")
+
     # Email bridge: pipe the Gmail inbox into the chat stream.
     bridge = None
     if args.email:
@@ -201,6 +228,7 @@ def run(argv: list[str] | None = None) -> int:
             bridge = EmailBridge(
                 agent,
                 auto_reply=not args.no_auto_reply,
+                supervisor=supervisor,
             )
             bridge.start()
             p = agent.palette
@@ -220,7 +248,7 @@ def run(argv: list[str] | None = None) -> int:
             continue
 
         if line.startswith("/"):
-            if handle_command(agent, line):
+            if handle_command(agent, line, supervisor=supervisor):
                 print("Bye.")
                 break
             continue
@@ -234,4 +262,6 @@ def run(argv: list[str] | None = None) -> int:
 
     if bridge is not None:
         bridge.stop()
+    if supervisor is not None:
+        supervisor.stop()
     return 0

@@ -105,6 +105,16 @@ SMTP_PORT: int = int(_cfg["smtp_port"])
 EMAIL_POLL_INTERVAL: int = int(_cfg.get("email_poll_interval", 10))
 EMAIL_AUTO_REPLY: bool = bool(_cfg.get("email_auto_reply", True))
 
+# Supervisor parameters
+# The supervisor is a second, always-on LLM instance that runs on the
+# server's second parallel slot (n_parallel >= 2).  It answers state
+# questions and periodically reviews the assistant's work, interjecting
+# when it believes the assistant is off track.
+SUPERVISOR_ENABLED: bool = bool(_cfg.get("supervisor_enabled", False))
+SUPERVISOR_INTERVAL: int = int(_cfg.get("supervisor_interval", 60))
+SUPERVISOR_COOLDOWN: int = int(_cfg.get("supervisor_cooldown", 300))
+SUPERVISOR_MAX_OUTPUT_TOKENS: int = int(_cfg.get("supervisor_max_output_tokens", 512))
+
 # UI parameters
 MAX_VISIBLE_WIDGETS: int = int(_cfg["max_visible_widgets"])
 
@@ -175,6 +185,10 @@ __all__ = [
     "SMTP_PORT",
     "EMAIL_POLL_INTERVAL",
     "EMAIL_AUTO_REPLY",
+    "SUPERVISOR_ENABLED",
+    "SUPERVISOR_INTERVAL",
+    "SUPERVISOR_COOLDOWN",
+    "SUPERVISOR_MAX_OUTPUT_TOKENS",
     # UI parameters
     "MAX_VISIBLE_WIDGETS",
     # Timeout parameters
