@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import json
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -404,6 +404,48 @@ def test_is_fresh_naive_date_assumed_utc():
         date=datetime(2025, 12, 31, 23, 0), uid="4",  # naive, before start
     )
     assert bridge._is_fresh(msg) is False
+
+
+def test_is_fresh_default_grace_window():
+    """The default session start includes a 60 s lookback grace.
+
+    This is the regression test for the "--email no longer reacts" bug:
+    a user who sends the email and *then* starts the TUI (or whose machine
+    clock lags Gmail by a few seconds) must still have the email accepted.
+    An email a few minutes old is still correctly treated as stale.
+    """
+    from nbchat.tui.email_bridge import EmailBridge
+    agent = TerminalAgent(color=False)
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)  # default start
+
+    now = datetime.now(timezone.utc)
+
+    # 30 s ago -> inside the grace window -> fresh.
+    recent = email_inbox.EmailMessage(
+        message_id="<r@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat", body="hi",
+        date=now - timedelta(seconds=30), uid="50",
+    )
+    assert bridge._is_fresh(recent) is True
+
+    # 5 min ago -> well before the grace window -> stale.
+    old = email_inbox.EmailMessage(
+        message_id="<o@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat", body="hi",
+        date=now - timedelta(minutes=5), uid="51",
+    )
+    assert bridge._is_fresh(old) is False
+
+
+def test_session_start_pinned_used_verbatim():
+    """An explicitly pinned session_start is used as-is (no grace added),
+    so tests that pin a start are fully deterministic."""
+    from nbchat.tui.email_bridge import EmailBridge
+    agent = TerminalAgent(color=False)
+    pinned = datetime(2026, 1, 1, tzinfo=timezone.utc)
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1,
+                         session_start=pinned)
+    assert bridge._session_start == pinned
 
 
 def test_poll_skips_stale_matching_email():

@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 import threading
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from nbchat.core import config
 from nbchat.core import email_inbox, email_smtp
@@ -70,10 +70,19 @@ class EmailBridge:
         self._seen: set[str] = set()   # in-memory Message-ID dedupe (belt & suspenders)
         self._thread: threading.Thread | None = None
         # Timestamp of this chat session's start.  The bridge only injects
-        # mail sent at/after this moment, so pre-existing unread mail is
-        # never answered.  Defaults to "now" (the app constructs the bridge
-        # at session start); tests may pin it for determinism.
-        self._session_start = session_start or datetime.now(timezone.utc)
+        # mail sent at/after this moment, so pre-existing unread mail
+        # (days/weeks old) is never answered.  When no explicit
+        # session_start is given we default to "now" **minus a 60 s
+        # lookback grace**, which handles two real-world cases:
+        #   1. The user sends the email and *then* starts the TUI.
+        #   2. Minor clock skew between the user's machine and Gmail.
+        # A pinned session_start (e.g. from tests) is used verbatim.
+        if session_start is not None:
+            self._session_start = session_start
+        else:
+            self._session_start = (
+                datetime.now(timezone.utc) - timedelta(seconds=60)
+            )
 
     # ── Lifecycle ──────────────────────────────────────────────────────
 
