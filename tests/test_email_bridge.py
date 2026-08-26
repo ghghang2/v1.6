@@ -461,6 +461,38 @@ def test_session_start_pinned_used_verbatim():
     assert bridge._session_start == pinned
 
 
+def test_is_fresh_naive_session_start_does_not_crash():
+    """A naive session_start (from any code path) must not raise
+    TypeError on comparison with an aware email Date.
+
+    Regression: the detector thread crashed with
+    ``TypeError: can't compare offset-naive and offset-aware datetimes``
+    when session_start was naive.  _is_fresh now normalises both sides
+    to aware-UTC.
+    """
+    from nbchat.tui.email_bridge import EmailBridge
+    agent = TerminalAgent(color=False)
+    # Deliberately naive pinned start (no tzinfo).
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1,
+                         session_start=datetime(2026, 1, 1, 12, 0))
+
+    # Aware email Date, well after the (naive) start -> fresh.
+    msg = email_inbox.EmailMessage(
+        message_id="<naive@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat", body="hi",
+        date=datetime(2026, 1, 1, 13, 0, tzinfo=timezone.utc), uid="60",
+    )
+    assert bridge._is_fresh(msg) is True
+
+    # Aware email Date, before the (naive) start -> stale.
+    old = email_inbox.EmailMessage(
+        message_id="<naive2@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat", body="hi",
+        date=datetime(2025, 12, 31, 13, 0, tzinfo=timezone.utc), uid="61",
+    )
+    assert bridge._is_fresh(old) is False
+
+
 def test_poll_skips_stale_matching_email():
     """A matching email sent BEFORE session start is neither injected nor
     marked read — the core of the stale-unread-mail fix."""

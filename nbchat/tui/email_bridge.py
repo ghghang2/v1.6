@@ -310,13 +310,25 @@ class EmailBridge:
         with no parseable ``Date`` is treated as fresh (we cannot prove it
         is stale), so a legitimate command is never silently dropped; in
         practice Gmail always populates the ``Date`` header.
+
+        Both sides of the comparison are normalised to aware-UTC to
+        avoid ``TypeError: can't compare offset-naive and offset-aware
+        datetimes`` regardless of what the IMAP server or the caller
+        hands us.
         """
         if msg.date is None:
             return True
         msg_date = msg.date
         if msg_date.tzinfo is None:
             msg_date = msg_date.replace(tzinfo=timezone.utc)
-        return msg_date >= self._session_start
+        else:
+            msg_date = msg_date.astimezone(timezone.utc)
+        # Normalise the session start too (defensive: a naive session_start
+        # from any code path would otherwise crash the comparison).
+        start = self._session_start
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=timezone.utc)
+        return msg_date >= start
 
     @staticmethod
     def _parse_addr(from_header: str) -> str | None:
