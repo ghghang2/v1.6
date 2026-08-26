@@ -152,6 +152,32 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         with self._send_lock:
             return self._run_turn(text, self._print_user)
 
+    def send_async(self, text: str) -> threading.Thread:
+        """Run a user turn on a daemon thread and return the thread handle.
+
+        The turn runs the exact same blocking path as :meth:`send` (holding
+        ``_send_lock`` the whole time), so it is fully serialized with the
+        email bridge and any other turn.  The caller is expected to keep
+        reading input while the returned thread is alive and to
+        :meth:`interrupt` + join it when the user wants to redirect.
+        """
+        def _runner() -> None:
+            with self._send_lock:
+                try:
+                    self._run_turn(text, self._print_user)
+                except Exception:
+                    # The conversation loop already surfaces errors through
+                    # _on_agent_message; never let a turn thread die silently.
+                    import logging
+                    logging.getLogger("nbchat.tui").exception(
+                        "async turn failed")
+
+        thread = threading.Thread(
+            target=_runner, name="nbchat-tui-turn", daemon=True
+        )
+        thread.start()
+        return thread
+
     def send_from_email(self, sender: str, subject: str, body: str) -> str:
         """Inject an inbound email into the chat as a user turn.
 
@@ -188,6 +214,18 @@ class TerminalAgent(ContextMixin, ConversationMixin):
     def busy(self) -> bool:
         """True while a conversation turn is running the agentic loop."""
         return self._turn_active
+
+    def interrupt(self) -> None:
+        """Ask the in-flight turn to stop at the next safe point.
+
+        Sets the shared stop event that the conversation loop and the
+        streaming loop already honor (checked at the top of each tool-turn
+        and between streamed chunks).  The turn thread then winds down and
+        exits; the caller should join it before starting the next turn so
+        history is consistent.  Safe to call from any thread; a no-op when
+        no turn is running.
+        """
+        self._stop_event.set()
 
     def interject(self, text: str) -> None:
         """Queue a supervisor interjection for the next safe point.

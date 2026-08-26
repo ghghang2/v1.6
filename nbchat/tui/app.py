@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import threading
 import urllib.request
 
 from nbchat.core import config
@@ -44,7 +45,9 @@ _HELP = """Commands
 Tips
   • Type a normal message and press Enter to chat; the reply streams in live.
   • End a line with a backslash ( \\ ) to continue on the next line.
-  • Press Ctrl+C while a reply is streaming to interrupt it.
+  • Type a new message while a reply is streaming to interrupt it and
+    redirect the agent immediately (no need to wait for the stream to finish).
+  • Press Ctrl+C while a reply is streaming to interrupt it too.
   • Start with --email to also receive Gmail replies in this chat.
 """
 
@@ -160,6 +163,26 @@ def read_line(prompt: str) -> str:
     return line
 
 
+def wait_for_turn(agent: TerminalAgent, thread: threading.Thread) -> None:
+    """Block until the in-flight turn thread finishes.
+
+    Runs on the main thread *only* when there is no active input prompt (the
+    user has not typed anything to redirect), so it never competes with the
+    input thread for the terminal.  If the user presses Ctrl+C while we wait,
+    we ask the turn to stop and wait for it to wind down so the agent is left
+    in a clean state (history consistent, no orphaned LLM call).
+    """
+    while thread.is_alive():
+        try:
+            thread.join(timeout=0.25)
+        except KeyboardInterrupt:
+            agent.interrupt()
+            thread.join(timeout=5.0)
+            if thread.is_alive():
+                # The turn could not be stopped in time; abandon the wait and
+                # let the daemon thread finish on its own.
+                break
+
 # ── Main loop ──────────────────────────────────────────────────────────────
 
 def run(argv: list[str] | None = None) -> int:
@@ -236,30 +259,53 @@ def run(argv: list[str] | None = None) -> int:
                   f"(poll every {bridge._poll_interval}s, "
                   f"auto-reply: {bridge._auto_reply})")
 
-    prompt = agent.palette.cyan("❯ ")
+    prompt = agent.palette.cyan("\u276f ")
+    # The turn thread runs the agentic loop in the background.  The main
+    # thread *always* keeps reading input so the user can interject and
+    # redirect the stream at any time.  We only join the turn thread on exit
+    # (clean shutdown) — never while a prompt is live, which would block the
+    # user from typing.
+    turn_thread = None
     while True:
         try:
             line = read_line(prompt).strip()
         except (EOFError, KeyboardInterrupt):
+            # Ctrl+C / EOF at the prompt: stop any in-flight turn, exit.
+            if turn_thread is not None and turn_thread.is_alive():
+                agent.interrupt()
+                wait_for_turn(agent, turn_thread)
             print("\nBye.")
             break
 
         if not line:
             continue
 
+        # Mid-stream interjection: a turn is still running and the user typed
+        # a new message.  Stop the current turn and start a fresh one with the
+        # new message.  ``send_async`` serialises on the agent's send lock, so
+        # the new turn waits for the (now interrupted) turn to wind down, then
+        # runs the user's redirect — no message is lost.
+        if turn_thread is not None and turn_thread.is_alive():
+            agent.interrupt()
+            print("\n" + agent.palette.yellow(
+                "[redirecting \u2014 stopping current response]"))
+            turn_thread = agent.send_async(line)
+            agent.remember_session(agent.session_id)
+            # Do NOT block: keep reading so the user can interject again.
+            continue
+
+        # No turn in flight: idle prompt loop.
         if line.startswith("/"):
             if handle_command(agent, line, supervisor=supervisor):
                 print("Bye.")
                 break
             continue
 
-        try:
-            agent.send(line)
-            agent.remember_session(agent.session_id)
-        except KeyboardInterrupt:
-            agent._stop_event.set()
-            print("\n" + agent.palette.yellow("[interrupted]"))
-
+        turn_thread = agent.send_async(line)
+        agent.remember_session(agent.session_id)
+        # Do NOT block here: the loop returns to read_line immediately so the
+        # user can interject mid-stream.  The turn thread streams in the
+        # background.
     if bridge is not None:
         bridge.stop()
     if supervisor is not None:
