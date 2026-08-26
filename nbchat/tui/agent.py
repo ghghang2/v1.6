@@ -23,8 +23,6 @@ from nbchat.core.supervisor import InterjectionQueue
 from nbchat.ui.context_manager import ContextMixin, ImportanceTracker
 from nbchat.ui.conversation import ConversationMixin
 from nbchat.tui.colors import Palette
-from prompt_toolkit import print_formatted_text
-from prompt_toolkit.formatted_text import ANSI
 
 # Session ids are namespaced so terminal chats are easy to spot in the shared
 # chat_history.db alongside Jupyter / WhatsApp sessions.
@@ -245,66 +243,54 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         """
         return self._interjection_queue.drain()
 
-    # ── Terminal output helper ──────────────────────────────────────
-
-    def _write(self, text: str, end: str = "\n") -> None:
-        """Write *text* to the terminal, printing above the active prompt.
-
-        Uses ``print_formatted_text`` so that when a prompt_toolkit prompt
-        is live, the output appears *above* the user's typed line and the
-        prompt re-renders with the user's text intact.  When ``sys.stdout``
-        is not a TTY (tests with capsys, CI, pipes) it writes directly to
-        ``sys.stdout`` so the output is captured correctly.
-        """
-        if sys.stdout.isatty():
-            print_formatted_text(ANSI(text), end=end)
-        else:
-            sys.stdout.write(text + end)
-            sys.stdout.flush()
-
     # ── Terminal output hooks (ConversationMixin interface) ────────────────
 
     def _print_user(self, text: str) -> None:
         p = self.palette
-        self._write(p.green("You: ") + "\n", end="")
+        sys.stdout.write(p.green("You: ") + "\n")
         for line in text.splitlines() or [""]:
-            self._write("  " + line + "\n", end="")
-        self._write("\n", end="")
+            sys.stdout.write("  " + line + "\n")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
     def _print_mail(self, sender: str, subject: str, text: str) -> None:
         p = self.palette
-        self._write(p.magenta(f"✉ Email {p.bold(sender)}")
-                    + p.gray(f" — {subject}") + "\n", end="")
+        sys.stdout.write(p.magenta(f"✉ Email {p.bold(sender)}")
+                         + p.gray(f" — {subject}") + "\n")
         for line in text.splitlines():
             if line.startswith("[Email message from") or line.startswith("Subject:"):
                 continue
-            self._write("  " + line + "\n", end="")
-        self._write("\n", end="")
+            sys.stdout.write("  " + line + "\n")
+        sys.stdout.write("\n")
+        sys.stdout.flush()
 
     def _on_stream_reasoning(self, reasoning: str) -> None:
         p = self.palette
         delta = reasoning[len(self._reasoning_printed):]
         if delta:
             if not self._reasoning_printed:
-                self._write(p.dim("[thinking] "), end="")
-            self._write(p.dim(delta), end="")
+                sys.stdout.write(p.dim("[thinking] "))
+            sys.stdout.write(p.dim(delta))
+            sys.stdout.flush()
         self._reasoning_printed = reasoning
 
     def _on_stream_token(self, content: str) -> None:
         p = self.palette
         if not self._content_started:
             if self._reasoning_printed:
-                self._write("\n", end="")
-            self._write(p.cyan("» "), end="")
+                sys.stdout.write("\n")
+            sys.stdout.write(p.cyan("» "))
             self._content_started = True
         delta = content[len(self._content_printed):]
         if delta:
-            self._write(delta, end="")
+            sys.stdout.write(delta)
+            sys.stdout.flush()
         self._content_printed = content
 
     def _on_stream_complete(self, content: str, tool_calls: list | None) -> None:
         if self._content_started or self._reasoning_printed:
-            self._write("\n", end="")
+            sys.stdout.write("\n")
+            sys.stdout.flush()
         if content:
             self._last_response = content
         # Reset streaming state for the next LLM call in the loop.
@@ -316,13 +302,15 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         p = self.palette
         hint = _arg_hint(tool_args)
         preview = raw_result[:300].replace("\n", " ⏎ ")
-        self._write(p.blue(f"  [tool] {p.bold(tool_name)}({hint})\n"), end="")
+        sys.stdout.write(p.blue(f"  [tool] {p.bold(tool_name)}({hint})\n"))
         if preview.strip():
             ellipsis = "…" if len(raw_result) > 300 else ""
-            self._write(p.gray(f"         {preview}{ellipsis}\n"), end="")
+            sys.stdout.write(p.gray(f"         {preview}{ellipsis}\n"))
+        sys.stdout.flush()
 
     def _on_agent_message(self, text: str) -> None:
-        self._write(self.palette.red(f"  ! {text}\n"), end="")
+        sys.stdout.write(self.palette.red(f"  ! {text}\n"))
+        sys.stdout.flush()
         if not self._last_response:
             self._last_response = text
 

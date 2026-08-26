@@ -24,9 +24,6 @@ import urllib.request
 
 from nbchat.core import config
 from nbchat.tui.agent import TerminalAgent
-from prompt_toolkit import print_formatted_text          # noqa: F401
-from prompt_toolkit.formatted_text import ANSI            # noqa: F401
-from prompt_toolkit.shortcuts import PromptSession
 
 _BANNER = """
   ┌──────────────────────────────────────────────┐
@@ -150,35 +147,13 @@ def handle_command(agent: TerminalAgent, line: str, supervisor=None) -> bool:
 
 
 # ── Input reading (with backslash continuation) ────────────────────────────
-#
-# Uses prompt_toolkit so the typed line is rendered in its own row and is
-# never overwritten by concurrent streaming output from the turn thread.
-# Falls back to built-in input() when stdin is not a TTY (tests, CI, pipes)
-# so that monkeypatching builtins.input still works.
 
-_session = PromptSession()
-
-
-def read_line(prompt: str, session: PromptSession | None = None) -> str:
-    """Read a line from the user, supporting backslash continuation.
-
-    Uses prompt_toolkit when stdin is a TTY so that streamed output from the
-    background turn thread never corrupts the text the user is typing.
-    Falls back to ``input()`` otherwise (tests, CI, piped stdin).
-    """
-    sess = session or _session
-    interactive = sys.stdin.isatty()
-
-    def _read(p: str) -> str:
-        if interactive:
-            return sess.prompt(p)
-        return input(p)
-
-    line = _read(prompt)
+def read_line(prompt: str) -> str:
+    line = input(prompt)
     if line.rstrip().endswith("\\"):
         buf = line.rstrip()[:-1]
         while True:
-            cont = _read("  …")
+            cont = input("  …")
             if cont.rstrip().endswith("\\"):
                 buf += "\n" + cont.rstrip()[:-1]
             else:
