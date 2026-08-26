@@ -205,7 +205,7 @@ def test_is_outbound_detects_marker():
 # ── email_bridge: injection + poll loop (mocked network) ─────────────────────────
 
 def test_poll_injects_matching_email_only():
-    """_poll_once injects only matching emails; others are marked read and
+    """Detection + processing injects only matching emails; others are marked read and
     never reach the agent."""
     agent = TerminalAgent(color=False)
     from nbchat.tui.email_bridge import EmailBridge
