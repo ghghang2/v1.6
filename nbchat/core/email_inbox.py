@@ -83,6 +83,28 @@ def _extract_body(msg: email.message.Message) -> str:
     return body.strip()
 
 
+def _parse_date(value: str | None) -> datetime | None:
+    """Parse an RFC 2822 ``Date`` header into an aware-UTC datetime.
+
+    ``email.utils.parsedate_to_datetime`` returns a *naive* datetime when
+    the header carries no timezone offset and an *aware* one when it does
+    (e.g. ``+0530``).  A single inbox poll that mixes the two makes
+    ``list.sort`` raise ``TypeError: can't compare offset-naive and
+    offset-aware datetimes``.  We normalise every result to aware-UTC so
+    callers can sort and compare freely: a missing offset is treated as
+    UTC (the overwhelmingly common case), and an explicit offset is
+    converted to UTC.  Returns ``None`` when there is no parseable date.
+    """
+    if not value:
+        return None
+    dt = email.utils.parsedate_to_datetime(value)
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
 def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
     """Connect to Gmail and return up to *limit* UNSEEN messages.
 
@@ -127,8 +149,7 @@ def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
                 from_addr=_decode_header(msg.get("From", "")),
                 subject=_decode_header(msg.get("Subject", "(no subject)")),
                 body=_extract_body(msg),
-                date=email.utils.parsedate_to_datetime(msg.get("Date"))
-                if msg.get("Date") else None,
+                date=_parse_date(msg.get("Date")),
                 uid=uid.decode() if isinstance(uid, bytes) else str(uid),
             ))
         # Keep chronological order (oldest first) for natural injection.

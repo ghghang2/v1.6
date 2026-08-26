@@ -75,6 +75,43 @@ def test_email_message_dataclass():
     assert em.subject == "Hi"
 
 
+# ── email_inbox: _parse_date (naive/aware normalisation) ─────────────────────
+
+
+def test_parse_date_none_for_empty():
+    assert email_inbox._parse_date(None) is None
+    assert email_inbox._parse_date("") is None
+
+
+def test_parse_date_naive_becomes_aware_utc():
+    """A Date header with no offset is treated as UTC and made aware."""
+    dt = email_inbox._parse_date("Mon, 03 Jan 2026 10:00:00")
+    assert dt is not None
+    assert dt.tzinfo is not None
+    assert dt.utcoffset() == timedelta(0)
+
+
+def test_parse_date_aware_converted_to_utc():
+    """A Date header with an explicit offset is converted to UTC."""
+    dt = email_inbox._parse_date("Mon, 03 Jan 2026 10:00:00 +0530")
+    assert dt is not None
+    assert dt.tzinfo is not None
+    # 10:00 +05:30 == 04:30 UTC
+    assert dt.utcoffset() == timedelta(0)
+    assert (dt.hour, dt.minute) == (4, 30)
+
+
+def test_parse_date_mixed_sort_does_not_crash():
+    """Regression: an inbox poll mixing an offset-less Date (naive) and a
+    Date with an explicit offset (aware) must not raise
+    ``TypeError: can't compare offset-naive and offset-aware datetimes``
+    when the results are sorted chronologically (as fetch_unseen does)."""
+    naive = email_inbox._parse_date("Mon, 03 Jan 2026 10:00:00")
+    aware = email_inbox._parse_date("Mon, 03 Jan 2026 12:00:00 +0530")
+    assert naive is not None and aware is not None
+    # Both are now aware, so sorting a mixed list is safe.
+    ordered = sorted([aware, naive])
+    assert ordered == [aware, naive]
 # ── email_bridge: _should_process filter ─────────────────────────────────────────
 
 def test_should_process_own_addr_with_nbchat_subject():
