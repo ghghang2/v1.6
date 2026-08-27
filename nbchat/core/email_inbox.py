@@ -183,9 +183,13 @@ def mark_read_batch(uids: list[str], box: str = "INBOX") -> None:
     try:
         host.login("ghghang2@gmail.com", pw)
         host.select(box)
-        # IMAP UID STORE accepts a space-separated UID set.
-        uid_set = " ".join(uids)
-        host.uid("STORE", uid_set, "+FLAGS", "\\Seen")
+        # IMAP UID STORE accepts a UID set, but imaplib serialises every
+        # argument as a quoted literal, so a single "1 2" string becomes the
+        # quoted literal "1 2" and Gmail rejects it with
+        # ``BAD [Could not parse command]``.  Passing each UID as its own
+        # argument lets imaplib emit them as a proper space-separated set.
+        for uid in uids:
+            host.uid("STORE", uid, "+FLAGS", "\\Seen")
     finally:
         try:
             host.logout()
