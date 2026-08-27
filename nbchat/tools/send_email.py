@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import smtplib
+from email import policy
 from email.message import EmailMessage
 import os
 
@@ -50,7 +51,9 @@ def _send_email(subject: str, body: str) -> str:
     email bridge never re-injects the agent's own outbound mail.
     """
     try:
-        msg = EmailMessage()
+        # max_line_length=9999 prevents line-folding of long headers
+        # (In-Reply-To, References) which Gmail's threading engine can't parse.
+        msg = EmailMessage(policy=policy.SMTP.clone(max_line_length=9999))
         msg["From"] = LOGIN
         msg["To"] = TO_ADDR
         msg["Subject"] = subject

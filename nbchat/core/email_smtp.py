@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import smtplib
+from email import policy
 from email.message import EmailMessage
 
 SMTP_SERVER = "smtp.gmail.com"
@@ -48,7 +49,11 @@ def send(to: str, subject: str, body: str, *, in_reply_to: str = "", references:
     Exception
         On any SMTP / authentication failure.
     """
-    msg = EmailMessage()
+    # Use a generous max_line_length so In-Reply-To / References headers
+    # are NOT line-folded.  Gmail's threading engine fails to extract
+    # Message-IDs from folded continuation lines, which causes replies
+    # to appear as new threads instead of joining the original.
+    msg = EmailMessage(policy=policy.SMTP.clone(max_line_length=9999))
     msg["From"] = LOGIN
     msg["To"] = to
     msg["Subject"] = subject
