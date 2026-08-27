@@ -21,7 +21,7 @@ def _password() -> str:
     return pw.strip()
 
 
-def send(to: str, subject: str, body: str) -> str:
+def send(to: str, subject: str, body: str, *, in_reply_to: str = "", references: str = "") -> str:
     """Send a plain-text email via Gmail SMTP.
 
     Parameters
@@ -29,6 +29,11 @@ def send(to: str, subject: str, body: str) -> str:
     to: Recipient address.
     subject: Subject line.
     body: Plain-text body.
+    in_reply_to: Optional Message-ID of the message being replied to.
+        When set, the outgoing mail carries an ``In-Reply-To`` header so
+        Gmail groups it into the same thread as the original.
+    references: Optional space-separated list of Message-IDs forming the
+        thread chain.  Appended to the outgoing ``References`` header.
 
     Returns
     -------
@@ -48,6 +53,10 @@ def send(to: str, subject: str, body: str) -> str:
     msg["To"] = to
     msg["Subject"] = subject
     msg["X-Nbchat"] = "outbound"
+    if in_reply_to:
+        msg["In-Reply-To"] = in_reply_to
+    if references:
+        msg["References"] = references
     msg.set_content(body)
 
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:

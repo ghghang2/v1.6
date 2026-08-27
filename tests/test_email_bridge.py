@@ -786,3 +786,121 @@ def test_fetch_body_returns_extracted_text():
         body = email_inbox.fetch_body("1")
 
     assert body == "Hello body"
+
+
+# \u2500\u2500 email_bridge: reply subject helper \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+
+def test_reply_subject_plain():
+    """A plain subject gets a single 'Re: ' prefix."""
+    from nbchat.tui.email_bridge import EmailBridge
+    assert EmailBridge._reply_subject("nbchat: do a thing") == "Re: nbchat: do a thing"
+
+
+def test_reply_subject_strips_single_re():
+    """'Re: foo' becomes 'Re: foo' (not 'Re: Re: foo')."""
+    from nbchat.tui.email_bridge import EmailBridge
+    assert EmailBridge._reply_subject("Re: nbchat: do a thing") == "Re: nbchat: do a thing"
+
+
+def test_reply_subject_strips_multiple_re():
+    """'Re: Re: foo' becomes 'Re: foo'."""
+    from nbchat.tui.email_bridge import EmailBridge
+    assert EmailBridge._reply_subject("Re: Re: nbchat: do a thing") == "Re: nbchat: do a thing"
+
+
+# \u2500\u2500 email_bridge: thread headers \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+
+def test_thread_headers_with_references():
+    """In-Reply-To is the incoming Message-ID; References is the chain + ID."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<incoming@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: test", body="hello", date=None, uid="1",
+        references="<root@x> <parent@x>",
+    )
+    in_reply_to, references = bridge._thread_headers(msg)
+    assert in_reply_to == "<incoming@x>"
+    assert references == "<root@x> <parent@x> <incoming@x>"
+
+
+def test_thread_headers_no_references():
+    """When the incoming email has no References, only the Message-ID is used."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<solo@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: test", body="hello", date=None, uid="1",
+    )
+    in_reply_to, references = bridge._thread_headers(msg)
+    assert in_reply_to == "<solo@x>"
+    assert references == "<solo@x>"
+
+
+# \u2500\u2500 email_bridge: priority keywords \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+
+def test_urgent_keyword_gets_high_priority():
+    """Subject containing 'urgent' gets PRIO_HIGH (0)."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge, PRIO_HIGH
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<u@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: urgent fix needed", body="fix it",
+        date=None, uid="1",
+    )
+    bridge._enqueue(msg)
+    prio, _seq, _m = bridge._queue.get_nowait()
+    assert prio == PRIO_HIGH
+
+
+def test_high_priority_keyword_gets_high_priority():
+    """Subject containing 'high priority' gets PRIO_HIGH (0)."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge, PRIO_HIGH
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<h@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: high priority task", body="do it",
+        date=None, uid="1",
+    )
+    bridge._enqueue(msg)
+    prio, _seq, _m = bridge._queue.get_nowait()
+    assert prio == PRIO_HIGH
+
+
+def test_urgent_preempts_low_priority():
+    """An urgent email enqueued while a low-priority one is 'in flight'
+    triggers an interrupt on the agent."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge, PRIO_LOW
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    # Simulate the worker being busy with a low-priority email.
+    low_msg = email_inbox.EmailMessage(
+        message_id="<low@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: background task", body="long task",
+        date=None, uid="1",
+    )
+    bridge._processing_msg = low_msg
+    bridge._processing_prio = PRIO_LOW
+
+    # Enqueue an urgent (high-priority) email.
+    urgent_msg = email_inbox.EmailMessage(
+        message_id="<urg@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: urgent", body="stop everything",
+        date=None, uid="2",
+    )
+    bridge._enqueue(urgent_msg)
+
+    # The agent's _stop_event should have been set by the interrupt.
+    assert agent._stop_event.is_set(), "urgent email should preempt low-priority turn"

@@ -25,6 +25,8 @@ class EmailMessage:
     date: datetime | None
     uid: str  # IMAP UID (used to mark as read)
     x_nbchat: str = ""  # value of the X-Nbchat header ("" if absent)
+    in_reply_to: str = ""  # value of the In-Reply-To header
+    references: str = ""  # value of the References header (space-separated IDs)
 
 
 def _decode_header(value: str) -> str:
@@ -153,6 +155,8 @@ def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
                 date=_parse_date(msg.get("Date")),
                 uid=uid.decode() if isinstance(uid, bytes) else str(uid),
                 x_nbchat=(msg.get("X-Nbchat") or "").strip(),
+                in_reply_to=(msg.get("In-Reply-To") or "").strip(),
+                references=(msg.get("References") or "").strip(),
             ))
         # Keep chronological order (oldest first) for natural injection.
         results.sort(key=lambda e: e.date or datetime.min.replace(tzinfo=timezone.utc))
@@ -221,7 +225,7 @@ def peek_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
         for uid in ids[-limit:]:
             status, fetched = host.uid(
                 "FETCH", uid,
-                "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID X-NBCHAT)])"
+                "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID X-NBCHAT IN-REPLY-TO REFERENCES)])"
             )
             if status != "OK" or not fetched:
                 continue
@@ -234,6 +238,9 @@ def peek_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
                 body="",  # not fetched yet — use fetch_body()
                 date=_parse_date(msg.get("Date")),
                 uid=uid.decode() if isinstance(uid, bytes) else str(uid),
+                x_nbchat=(msg.get("X-Nbchat") or "").strip(),
+                in_reply_to=(msg.get("In-Reply-To") or "").strip(),
+                references=(msg.get("References") or "").strip(),
             ))
         results.sort(key=lambda e: e.date or datetime.min.replace(tzinfo=timezone.utc))
         return results
