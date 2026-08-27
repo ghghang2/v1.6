@@ -399,17 +399,16 @@ class EmailBridge:
         """
         subj = (msg.subject or "").lower()
         prio_label = "high" if any(kw in subj for kw in HIGH_PRIORITY_KEYWORDS) else "low"
-        position = self._queue.qsize()
         body = (
             f"Received: {msg.subject}\n"
             f"Priority: {prio_label}\n"
-            f"Queue position: {position}"
+            f"You are in the queue."
         )
         try:
             in_reply_to, references = self._thread_headers(msg)
             email_smtp.send(
                 to=self._parse_addr(msg.from_addr) or msg.from_addr,
-                subject=self._reply_subject(msg.subject),
+                subject=msg.subject,
                 body=body,
                 in_reply_to=in_reply_to,
                 references=references,
@@ -426,7 +425,7 @@ class EmailBridge:
             in_reply_to, references = self._thread_headers(msg)
             email_smtp.send(
                 to=self._parse_addr(msg.from_addr) or msg.from_addr,
-                subject=self._reply_subject(msg.subject),
+                subject=msg.subject,
                 body=body,
                 in_reply_to=in_reply_to,
                 references=references,

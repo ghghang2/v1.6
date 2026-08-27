@@ -904,3 +904,34 @@ def test_urgent_preempts_low_priority():
 
     # The agent's _stop_event should have been set by the interrupt.
     assert agent._stop_event.is_set(), "urgent email should preempt low-priority turn"
+
+def test_send_ack_uses_original_subject_and_no_re_prefix():
+    """The acknowledgment email uses the original subject (no 'Re: ' prefix)
+    and says 'You are in the queue.' without a position number."""
+    from nbchat.tui.email_bridge import EmailBridge
+
+    agent = TerminalAgent(color=False)
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msg = email_inbox.EmailMessage(
+        message_id="<ack@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: do a thing", body="please",
+        date=None, uid="10",
+    )
+
+    sent = {}
+    with patch("nbchat.tui.email_bridge.email_smtp.send") as mock_send:
+        mock_send.return_value = "ok"
+        bridge._send_ack(msg)
+        assert mock_send.call_count == 1
+        kwargs = mock_send.call_args
+        # Subject must be the original, not "Re: ..."
+        assert kwargs[1]["subject"] == "nbchat: do a thing"
+        # Body must contain the queue wording without a position number
+        body = kwargs[1]["body"]
+        assert "You are in the queue." in body
+        assert "Received: nbchat: do a thing" in body
+        assert "Priority: low" in body
+        # Must carry X-Nbchat via email_smtp (implicit)
+        # Must have threading headers
+        assert kwargs[1]["in_reply_to"] == "<ack@x>"
