@@ -335,9 +335,18 @@ class EmailBridge:
     def _is_outbound(self, msg) -> bool:
         """True if this is one of our own auto-replies (avoid self-loops).
 
-        Auto-replies carry the ``(nbchat-tui)`` marker in the subject so
-        they are never re-processed.
+        Two independent signals are checked so that a self-loop is
+        caught even if either one is absent:
+
+        * ``X-Nbchat`` header set to any non-empty value (e.g.
+          ``outbound``).  Every message sent through
+          :func:`nbchat.core.email_smtp.send` or the ``send_email``
+          tool carries this header, making it the primary signal.
+        * ``(nbchat-tui)`` marker in the subject line.  Kept as a
+          fallback for messages sent before the header was added.
         """
+        if getattr(msg, "x_nbchat", ""):
+            return True
         return f"({OUTBOUND_MARKER})" in msg.subject
 
     def _should_process(self, msg) -> bool:

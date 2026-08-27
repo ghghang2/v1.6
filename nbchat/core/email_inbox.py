@@ -24,6 +24,7 @@ class EmailMessage:
     body: str
     date: datetime | None
     uid: str  # IMAP UID (used to mark as read)
+    x_nbchat: str = ""  # value of the X-Nbchat header ("" if absent)
 
 
 def _decode_header(value: str) -> str:
@@ -151,6 +152,7 @@ def fetch_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
                 body=_extract_body(msg),
                 date=_parse_date(msg.get("Date")),
                 uid=uid.decode() if isinstance(uid, bytes) else str(uid),
+                x_nbchat=(msg.get("X-Nbchat") or "").strip(),
             ))
         # Keep chronological order (oldest first) for natural injection.
         results.sort(key=lambda e: e.date or datetime.min.replace(tzinfo=timezone.utc))
@@ -219,7 +221,7 @@ def peek_unseen(box: str = "INBOX", limit: int = 20) -> list[EmailMessage]:
         for uid in ids[-limit:]:
             status, fetched = host.uid(
                 "FETCH", uid,
-                "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID)])"
+                "(BODY.PEEK[HEADER.FIELDS (FROM SUBJECT DATE MESSAGE-ID X-NBCHAT)])"
             )
             if status != "OK" or not fetched:
                 continue

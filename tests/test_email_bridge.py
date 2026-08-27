@@ -239,6 +239,29 @@ def test_is_outbound_detects_marker():
     )
     assert bridge._is_outbound(regular) is False
 
+def test_is_outbound_detects_header():
+    """Messages with X-Nbchat header are detected as outbound even without
+    the subject marker."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    # Header present, no subject marker — should still be detected.
+    header_reply = email_inbox.EmailMessage(
+        message_id="<hdr@x>", from_addr=email_smtp.LOGIN,
+        subject="Re: nbchat test", body="auto reply",
+        date=None, uid="3", x_nbchat="outbound",
+    )
+    assert bridge._is_outbound(header_reply) is True
+
+    # No header, no subject marker — regular user email.
+    regular = email_inbox.EmailMessage(
+        message_id="<u2@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat test", body="testing",
+        date=None, uid="5",
+    )
+    assert bridge._is_outbound(regular) is False
+
 
 # ── email_bridge: injection + poll loop (mocked network) ─────────────────────────
 

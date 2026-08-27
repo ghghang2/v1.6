@@ -45,12 +45,16 @@ def _send_email(subject: str, body: str) -> str:
     -------
     str
         JSON string containing either ``result`` or ``error``.
+
+    Every message is stamped with an ``X-Nbchat: outbound`` header so the
+    email bridge never re-injects the agent's own outbound mail.
     """
     try:
         msg = EmailMessage()
         msg["From"] = LOGIN
         msg["To"] = TO_ADDR
         msg["Subject"] = subject
+        msg["X-Nbchat"] = "outbound"
         msg.set_content(body)
 
         with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:

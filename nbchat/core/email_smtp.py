@@ -35,6 +35,9 @@ def send(to: str, subject: str, body: str) -> str:
     str
         A human-readable confirmation on success.
 
+    Every message is stamped with an ``X-Nbchat: outbound`` header so the
+    email bridge can distinguish system-generated mail from user commands.
+
     Raises
     ------
     Exception
@@ -44,6 +47,7 @@ def send(to: str, subject: str, body: str) -> str:
     msg["From"] = LOGIN
     msg["To"] = to
     msg["Subject"] = subject
+    msg["X-Nbchat"] = "outbound"
     msg.set_content(body)
 
     with smtplib.SMTP(SMTP_SERVER, SMTP_PORT) as server:
