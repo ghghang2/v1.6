@@ -218,6 +218,12 @@ def run(argv: list[str] | None = None) -> int:
     parser.add_argument("--supervisor", action="store_true",
                         help="start the always-on supervisor watchdog "
                              "(uses the second parallel slot)")
+    parser.add_argument("--voice", action="store_true",
+                        help="start the Alfred voice bridge (localhost "
+                             f"port {config.VOICE_PORT}); reach it from "
+                             "your laptop via: ssh -L "
+                             f"{config.VOICE_PORT}:127.0.0.1:{config.VOICE_PORT} "
+                             "user@server")
     args = parser.parse_args(argv)
 
     up = server_ok()
@@ -248,6 +254,29 @@ def run(argv: list[str] | None = None) -> int:
         print(p.magenta("  supervisor ")
               + f"ACTIVE (review every {supervisor._interval}s, "
                 f"cooldown {supervisor._cooldown}s)")
+
+    # Voice bridge: localhost FastAPI that the laptop's Alfred client
+    # reaches over an SSH tunnel.  Starts before the supervisor so the
+    # supervisor can attach to the same bus and emit voice status updates.
+    voice_bus = None
+    voice_bridge = None
+    if args.voice or config.VOICE_ENABLED:
+        from nbchat.voice.events import VoiceEventBus
+        from nbchat.voice.server import VoiceBridge
+        voice_bus = VoiceEventBus()
+        voice_bridge = VoiceBridge(voice_bus, port=config.VOICE_PORT)
+        ok = voice_bridge.start()
+        p = agent.palette
+        if ok:
+            print(p.magenta("  voice   ")
+                  + f"Alfred bridge ACTIVE on 127.0.0.1:{config.VOICE_PORT} "
+                    + p.gray(f"(ssh -L {config.VOICE_PORT}:127.0.0.1:"
+                             f"{config.VOICE_PORT} user@server)"))
+        else:
+            print(p.red("  voice   bridge FAILED to start on port "
+                        f"{config.VOICE_PORT} — voice disabled"))
+            voice_bridge = None
+            voice_bus = None
 
     # Email bridge: pipe the Gmail inbox into the chat stream.
     bridge = None

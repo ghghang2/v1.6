@@ -115,6 +115,11 @@ SUPERVISOR_INTERVAL: int = int(_cfg.get("supervisor_interval", 60))
 SUPERVISOR_COOLDOWN: int = int(_cfg.get("supervisor_cooldown", 300))
 SUPERVISOR_MAX_OUTPUT_TOKENS: int = int(_cfg.get("supervisor_max_output_tokens", 512))
 
+# Voice channel (Alfred) — laptop bridge over an SSH tunnel.
+VOICE_ENABLED: bool = bool(_cfg.get("voice_enabled", False))
+VOICE_PORT: int = int(_cfg.get("voice_port", 8765))
+VOICE_STATUS_MIN_INTERVAL: int = int(_cfg.get("voice_status_min_interval", 300))
+
 # UI parameters
 MAX_VISIBLE_WIDGETS: int = int(_cfg["max_visible_widgets"])
 
@@ -189,6 +194,10 @@ __all__ = [
     "SUPERVISOR_INTERVAL",
     "SUPERVISOR_COOLDOWN",
     "SUPERVISOR_MAX_OUTPUT_TOKENS",
+    # Voice channel (Alfred)
+    "VOICE_ENABLED",
+    "VOICE_PORT",
+    "VOICE_STATUS_MIN_INTERVAL",
     # UI parameters
     "MAX_VISIBLE_WIDGETS",
     # Timeout parameters

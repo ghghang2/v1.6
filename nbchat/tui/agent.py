@@ -23,6 +23,8 @@ from nbchat.core.supervisor import InterjectionQueue
 from nbchat.ui.context_manager import ContextMixin, ImportanceTracker
 from nbchat.ui.conversation import ConversationMixin
 from nbchat.tui.colors import Palette
+from nbchat.voice.events import ALFRED, VoiceTagParser
+from nbchat.voice.events import VoiceEventBus  # noqa: F401  (type hint)
 
 # Session ids are namespaced so terminal chats are easy to spot in the shared
 # chat_history.db alongside Jupyter / WhatsApp sessions.
@@ -81,6 +83,15 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         self._content_printed = ""
         self._content_started = False
         self._last_response: str = ""
+
+        # Voice channel (Alfred).  The bus is attached by the TUI when
+        # --voice is active; when None, all voice hooks are no-ops.
+        self._voice_bus: VoiceEventBus | None = None
+        self._voice_parser = VoiceTagParser()
+        # Set when the conversation loop surfaces a terminal error
+        # (loop crash / max tool turns); used to pick the honest
+        # complete vs failed voice ack.
+        self._turn_failed = False
 
         comp.init_session(self.session_id)
 
@@ -163,6 +174,8 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         """
         def _runner() -> None:
             with self._send_lock:
+                self._voice_fire("started")
+                self._turn_failed = False
                 try:
                     self._run_turn(text, self._print_user)
                 except Exception:
@@ -171,12 +184,47 @@ class TerminalAgent(ContextMixin, ConversationMixin):
                     import logging
                     logging.getLogger("nbchat.tui").exception(
                         "async turn failed")
+                    self._turn_failed = True
+                finally:
+                    # Verified terminal state of the turn:
+                    #   interrupted  — the user set the stop event
+                    #   failed       — a terminal error was surfaced
+                    #   complete     — everything else
+                    if self._stop_event.is_set():
+                        self._voice_fire("interrupted")
+                    elif self._turn_failed:
+                        self._voice_fire("failed")
+                    else:
+                        self._voice_fire("complete")
 
         thread = threading.Thread(
             target=_runner, name="nbchat-tui-turn", daemon=True
         )
         thread.start()
         return thread
+
+    # -- Voice channel (Alfred) -------------------------------------------
+
+    def _voice_fire(self, kind: str) -> None:
+        """Fire a verified event-ack to the voice bus (no-op if off).
+
+        Only called from verified state transitions (see
+        :mod:`nbchat.voice.events`); the line is the deterministic
+        Alfred template for *kind*.
+        """
+        bus = self._voice_bus
+        if bus is None:
+            return
+        text = ALFRED.get(kind)
+        if not text:
+            return
+        self._print_voice(text)
+        bus.publish(kind, text)
+
+    def _print_voice(self, text: str) -> None:
+        p = self.palette
+        sys.stdout.write(p.dim(f"  \u266a Alfred: {text}\n"))
+        sys.stdout.flush()
 
     def send_from_email(self, sender: str, subject: str, body: str) -> str:
         """Inject an inbound email into the chat as a user turn.
@@ -283,8 +331,14 @@ class TerminalAgent(ContextMixin, ConversationMixin):
             self._content_started = True
         delta = content[len(self._content_printed):]
         if delta:
-            sys.stdout.write(delta)
-            sys.stdout.flush()
+            display, blocks = self._voice_parser.process(delta)
+            if display:
+                sys.stdout.write(display)
+                sys.stdout.flush()
+            for block in blocks:
+                self._print_voice(block)
+                if self._voice_bus is not None:
+                    self._voice_bus.publish("tag", block)
         self._content_printed = content
 
     def _on_stream_complete(self, content: str, tool_calls: list | None) -> None:
@@ -297,6 +351,8 @@ class TerminalAgent(ContextMixin, ConversationMixin):
         self._reasoning_printed = ""
         self._content_printed = ""
         self._content_started = False
+        # Fresh voice parser for the next LLM call (clean tag buffer).
+        self._voice_parser = VoiceTagParser()
 
     def _on_tool_display(self, raw_result: str, tool_name: str, tool_args: str) -> None:
         p = self.palette

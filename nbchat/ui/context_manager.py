@@ -239,12 +239,18 @@ class ContextMixin:
         try:
             lower = user_message.lower()
             updates: dict = {}
-            cm = db.get_core_memory(self.session_id) or {}
-            # The goal is the ORIGINAL user request. It must be pinned on the
-            # first user message and never overwritten, otherwise later turns
-            # (e.g. status chatter or corrections) silently replace the task
-            # the agent is actually working on.
-            if not cm.get("goal"):
+            # The goal tracks the user's CURRENT task.  It is updated on
+            # every substantive user message so the supervisor always reviews
+            # against the right objective.  Very short messages (acknowledg-
+            # ments like "yes", "sure", "pick it back up") and correction-
+            # keyword messages do NOT update the goal — they are continuations
+            # of the current task, not new tasks.
+            is_short = len(user_message.strip()) < 20
+            is_correction = any(
+                lower.startswith(kw) or f" {kw} " in lower or lower.endswith(f" {kw}")
+                for kw in _CORRECTION_KEYWORDS
+            )
+            if not is_short and not is_correction:
                 updates["goal"] = user_message[:300]
             if any(
                 lower.startswith(kw) or f" {kw} " in lower or lower.endswith(f" {kw}")

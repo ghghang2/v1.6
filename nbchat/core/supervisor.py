@@ -245,7 +245,7 @@ Always base your answers on the provided state data. Be concise.
 """
 
 _REVIEW_PROMPT = """\
-Review the assistant's current work. The user's original request was:
+Review the assistant's current work. The user's current request is:
 {goal}
 
 Recent actions taken by the assistant:
@@ -254,10 +254,22 @@ Recent actions taken by the assistant:
 Recent conversation exchange (last few messages):
 {exchange}
 
-Is the assistant making good progress toward the goal? If it appears stuck,
-off-track, or missing a key requirement, produce ONE short corrective
-instruction (max 2 sentences) that will be injected as a user message to the
-assistant. If the assistant is on track, respond with exactly: ON_TRACK
+Is the assistant making good progress toward the current request? If the
+recent exchange clearly shows the assistant is working on a DIFFERENT task
+than the stated request (e.g. the request was from a prior, already-completed
+turn), trust the exchange — the assistant is on track. Only interject if the
+assistant is genuinely stuck, off-track, or missing a key requirement of the
+CURRENT task. If on track, respond with exactly: ON_TRACK
+"""
+
+
+_VOICE_STATUS_PROMPT = """\
+You are Alfred, the user's butler, speaking aloud over a voice channel.
+Give the user ONE short spoken status update on the assistant's current task.
+Base it ONLY on the state data below. 1-2 sentences, under 15 seconds.
+Address the user as "sir". State progress honestly — never claim a step is
+done unless the data shows it. If there is nothing meaningful to report,
+respond with exactly: SILENT
 """
 
 
@@ -274,7 +286,9 @@ class Supervisor:
     def __init__(self, agent, *,
                  interval: int | None = None,
                  cooldown: int | None = None,
-                 max_output_tokens: int | None = None) -> None:
+                 max_output_tokens: int | None = None,
+                 voice_bus=None,
+                 voice_status_interval: int | None = None) -> None:
         self._agent = agent
         self._interval = interval or config.SUPERVISOR_INTERVAL
         self._cooldown = cooldown or config.SUPERVISOR_COOLDOWN
@@ -284,6 +298,14 @@ class Supervisor:
         self._last_interjection: float = 0.0
         self._interjection_count: int = 0
         self._lock = threading.Lock()
+        # Voice channel: periodic spoken status updates (verified — grounded
+        # in a live gather_state() snapshot).  Disabled unless a voice_bus is
+        # supplied (i.e. the TUI was started with --voice).
+        self._voice_bus = voice_bus
+        self._voice_status_interval = (
+            voice_status_interval or config.VOICE_STATUS_MIN_INTERVAL
+        )
+        self._last_voice_status: float = 0.0
 
     # ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -361,7 +383,60 @@ class Supervisor:
             except Exception as exc:
                 _log.warning("supervisor review failed: %s: %s",
                              type(exc).__name__, exc)
+            try:
+                self._voice_status()
+            except Exception as exc:
+                _log.warning("supervisor voice status failed: %s: %s",
+                             type(exc).__name__, exc)
             self._stop_event.wait(self._interval)
+
+    def _voice_status(self) -> None:
+        """Emit a spoken status update to the voice channel.
+
+        Only fires when:
+        1. A voice bus is attached (TUI started with --voice).
+        2. The assistant is actively working (``_turn_active``).
+        3. The voice status interval has elapsed.
+
+        The update is grounded in a live ``gather_state()`` snapshot — the
+        LLM may only report what the data shows.  A "SILENT" response is
+        dropped (no speech).
+        """
+        if self._voice_bus is None:
+            return
+        if not getattr(self._agent, "_turn_active", False):
+            return
+        if time.time() - self._last_voice_status < self._voice_status_interval:
+            return
+
+        state = gather_state(self._agent)
+        messages = [
+            {"role": "system", "content": _SUPERVISOR_SYSTEM_PROMPT},
+            {"role": "user", "content": _VOICE_STATUS_PROMPT + "\n\nState data:\n"
+             + json.dumps(state, default=str)[:4000]},
+        ]
+        try:
+            from nbchat.core.client import get_client
+            client = get_client()
+            resp = client.chat.completions.create(
+                model=config.MODEL_NAME,
+                messages=messages,
+                max_tokens=64,
+                temperature=0.3,
+            )
+            response = (resp.choices[0].message.content or "").strip()
+        except Exception as exc:
+            _log.warning("voice status LLM call failed: %s: %s",
+                         type(exc).__name__, exc)
+            return
+
+        if response.upper().startswith("SILENT"):
+            return
+        if not response:
+            return
+        _log.info("voice status: %s", response[:120])
+        self._voice_bus.publish("status", response)
+        self._last_voice_status = time.time()
 
     def _review_assistant(self) -> None:
         """One review cycle.
