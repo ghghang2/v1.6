@@ -335,19 +335,16 @@ class EmailBridge:
     def _is_outbound(self, msg) -> bool:
         """True if this is one of our own auto-replies (avoid self-loops).
 
-        Two independent signals are checked so that a self-loop is
-        caught even if either one is absent:
-
-        * ``X-Nbchat`` header set to any non-empty value (e.g.
-          ``outbound``).  Every message sent through
-          :func:`nbchat.core.email_smtp.send` or the ``send_email``
-          tool carries this header, making it the primary signal.
-        * ``(nbchat-tui)`` marker in the subject line.  Kept as a
-          fallback for messages sent before the header was added.
+        The sole signal is the ``X-Nbchat`` header.  Every message sent
+        through :func:`nbchat.core.email_smtp.send` or the ``send_email``
+        tool carries ``X-Nbchat: outbound``.  A user who replies to a
+        system email in Gmail gets a new message that retains the
+        subject text (including any ``(nbchat-tui)`` marker) but does
+        NOT inherit the custom header, so the header is the only
+        reliable way to distinguish system mail from user mail within
+        the same thread.
         """
-        if getattr(msg, "x_nbchat", ""):
-            return True
-        return f"({OUTBOUND_MARKER})" in msg.subject
+        return bool(getattr(msg, "x_nbchat", ""))
 
     def _should_process(self, msg) -> bool:
         """True if this email should be injected into the chat.

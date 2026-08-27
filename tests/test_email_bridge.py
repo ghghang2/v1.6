@@ -198,7 +198,7 @@ def test_should_reject_outbound_auto_reply():
     msg = email_inbox.EmailMessage(
         message_id="<self@x>", from_addr=email_smtp.LOGIN,
         subject="Re: nbchat test (nbchat-tui)", body="auto reply",
-        date=None, uid="15",
+        date=None, uid="15", x_nbchat="outbound",
     )
     assert bridge._should_process(msg) is False
 
@@ -228,7 +228,7 @@ def test_is_outbound_detects_marker():
     own_reply = email_inbox.EmailMessage(
         message_id="<self@x>", from_addr=email_smtp.LOGIN,
         subject="Re: Something (nbchat-tui)", body="self reply",
-        date=None, uid="2",
+        date=None, uid="2", x_nbchat="outbound",
     )
     assert bridge._is_outbound(own_reply) is True
 
@@ -261,6 +261,29 @@ def test_is_outbound_detects_header():
         date=None, uid="5",
     )
     assert bridge._is_outbound(regular) is False
+
+
+def test_user_reply_to_system_email_is_processed():
+    """When a user replies to a system auto-reply in Gmail, the reply
+    retains the subject text (including the (nbchat-tui) marker) but does
+    NOT carry the X-Nbchat header.  The bridge must process it as a
+    legitimate user command, not reject it as an outbound self-loop."""
+    agent = TerminalAgent(color=False)
+    from nbchat.tui.email_bridge import EmailBridge
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    # Simulates the user clicking Reply to the system's auto-reply.
+    # Gmail preserves the subject (with marker) but no X-Nbchat header.
+    user_reply = email_inbox.EmailMessage(
+        message_id="<user-reply@x>", from_addr=email_smtp.LOGIN,
+        subject="Re: supervisor: what's the status? (nbchat-tui)",
+        body="actually, can you also check disk space?",
+        date=None, uid="20",
+    )
+    # Must NOT be flagged as outbound (no header).
+    assert bridge._is_outbound(user_reply) is False
+    # Must be processed as a user command (subject has 'supervisor').
+    assert bridge._should_process(user_reply) is True
 
 
 # ── email_bridge: injection + poll loop (mocked network) ─────────────────────────
