@@ -62,6 +62,16 @@ class VoiceBridge:
             except queue.Empty:
                 return out
 
+    def get_inbound(self, timeout: float | None = None) -> str | None:
+        """Blocking fetch of one transcript (for the auto-submit thread).
+
+        Returns ``None`` when *timeout* elapses with nothing queued.
+        """
+        try:
+            return self._inbound.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
     # -- HTTP app ---------------------------------------------------------
 
     def _build_app(self):

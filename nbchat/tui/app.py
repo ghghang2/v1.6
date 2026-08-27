@@ -244,26 +244,17 @@ def run(argv: list[str] | None = None) -> int:
 
     print_banner(agent, up)
 
-    # Supervisor: always-on watchdog on the second parallel slot.
-    supervisor = None
-    if args.supervisor or config.SUPERVISOR_ENABLED:
-        from nbchat.core.supervisor import create_supervisor
-        supervisor = create_supervisor(agent)
-        supervisor.start()
-        p = agent.palette
-        print(p.magenta("  supervisor ")
-              + f"ACTIVE (review every {supervisor._interval}s, "
-                f"cooldown {supervisor._cooldown}s)")
-
     # Voice bridge: localhost FastAPI that the laptop's Alfred client
-    # reaches over an SSH tunnel.  Starts before the supervisor so the
-    # supervisor can attach to the same bus and emit voice status updates.
+    # reaches over an SSH tunnel.  Created FIRST so both the agent and the
+    # supervisor can attach to the same event bus.
     voice_bus = None
     voice_bridge = None
     if args.voice or config.VOICE_ENABLED:
-        from nbchat.voice.events import VoiceEventBus
+        from nbchat.voice.events import ALFRED_VOICE_PROMPT, VoiceEventBus
         from nbchat.voice.server import VoiceBridge
         voice_bus = VoiceEventBus()
+        agent._voice_bus = voice_bus
+        agent.system_prompt += ALFRED_VOICE_PROMPT
         voice_bridge = VoiceBridge(voice_bus, port=config.VOICE_PORT)
         ok = voice_bridge.start()
         p = agent.palette
@@ -274,9 +265,41 @@ def run(argv: list[str] | None = None) -> int:
                              f"{config.VOICE_PORT} user@server)"))
         else:
             print(p.red("  voice   bridge FAILED to start on port "
-                        f"{config.VOICE_PORT} — voice disabled"))
+                        f"{config.VOICE_PORT} \u2014 voice disabled"))
+            agent._voice_bus = None
             voice_bridge = None
             voice_bus = None
+        if voice_bridge is not None:
+            def _voice_inbound_loop():
+                """Daemon: auto-submit voice transcripts as user turns.
+
+                Blocks on the bridge's inbound queue; when a transcript
+                arrives it fires the verified 'received' ack and hands the
+                text to the agent via ``send_async`` (which serialises on
+                the send lock, so it never races a terminal turn).
+                """
+                while True:
+                    transcript = voice_bridge.get_inbound(timeout=1.0)
+                    if transcript is None:
+                        continue
+                    agent._voice_fire("received")
+                    p = agent.palette
+                    print(p.dim(f"  \u266a [voice] {transcript}"))
+                    agent.send_async(transcript)
+                    agent.remember_session(agent.session_id)
+            threading.Thread(target=_voice_inbound_loop, daemon=True,
+                             name="nbchat-voice-in").start()
+
+    # Supervisor: always-on watchdog on the second parallel slot.
+    supervisor = None
+    if args.supervisor or config.SUPERVISOR_ENABLED:
+        from nbchat.core.supervisor import create_supervisor
+        supervisor = create_supervisor(agent, voice_bus=voice_bus)
+        supervisor.start()
+        p = agent.palette
+        print(p.magenta("  supervisor ")
+              + f"ACTIVE (review every {supervisor._interval}s, "
+                f"cooldown {supervisor._cooldown}s)")
 
     # Email bridge: pipe the Gmail inbox into the chat stream.
     bridge = None
@@ -351,6 +374,8 @@ def run(argv: list[str] | None = None) -> int:
         # background.
     if bridge is not None:
         bridge.stop()
+    if voice_bridge is not None:
+        voice_bridge.stop()
     if supervisor is not None:
         supervisor.stop()
     return 0
