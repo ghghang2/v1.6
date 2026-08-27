@@ -71,7 +71,18 @@ class EmailBridge:
         self._seen: set[str] = set()   # in-memory Message-ID dedupe (belt & suspenders)
         self._thread: threading.Thread | None = None
         self._worker: threading.Thread | None = None
-        self._queue: "queue.Queue" = queue.Queue()
+        # Priority queue of (priority, seq, EmailMessage) tuples waiting to
+        # be processed by the worker thread.  Detection (IMAP) and processing
+        # (LLM) are decoupled so the detector never blocks on a slow turn.
+        #
+        # Supervisor emails get priority 0, normal emails priority 1, and a
+        # monotonically increasing sequence number breaks ties within the
+        # same priority (FIFO).  This lets a supervisor email jump ahead of
+        # a queued normal email so it is answered in real-time even while
+        # the assistant is mid-stream on a long turn.
+        self._queue: "queue.PriorityQueue" = queue.PriorityQueue()
+        self._seq = 0
+        self._seq_lock = threading.Lock()
         # Timestamp of this chat session's start.  The bridge only injects
         # mail sent at/after this moment, so pre-existing unread mail
         # (days/weeks old) is never answered.  When no explicit
@@ -189,7 +200,7 @@ class EmailBridge:
             except Exception as exc:
                 _log.warning("failed to fetch body for %s: %s", msg.uid, exc)
                 continue
-            self._queue.put(msg)
+            self._enqueue(msg)
             _log.info("enqueued email: %r from %s", msg.subject, msg.from_addr)
         # Mark all skipped fresh mail read in ONE IMAP session (was: one
         # connection per message).  Stale mail was never added to this list.
@@ -210,10 +221,16 @@ class EmailBridge:
         entire LLM turn).  The detector thread keeps running independently,
         so new emails are always picked up within one poll interval even
         while the worker is busy.
+
+        Emails are dequeued in priority order: supervisor emails (priority
+        0) are processed before normal emails (priority 1), so a supervisor
+        question is answered in real-time even when it arrives while a long
+        normal email turn is still queued.  Ties within a priority are
+        resolved FIFO by the sequence number.
         """
         while not self._stop.is_set():
             try:
-                msg = self._queue.get(timeout=1)
+                _prio, _seq, msg = self._queue.get(timeout=1)
             except queue.Empty:
                 continue
             try:
@@ -221,6 +238,23 @@ class EmailBridge:
             except Exception as exc:
                 _log.warning("email processing failed: %s: %s",
                              type(exc).__name__, exc)
+
+    def _enqueue(self, msg: "email_inbox.EmailMessage") -> None:
+        """Place *msg* on the priority queue with the right priority.
+
+        Supervisor emails (subject contains ``supervisor``) get priority 0
+        so they jump ahead of queued normal emails (priority 1).  A
+        monotonically increasing sequence number is used as the second
+        tuple element to break ties FIFO and to keep the tuple comparable
+        (two equal ``(prio, seq)`` pairs would otherwise compare the
+        :class:`EmailMessage` objects, which are not ordered).
+        """
+        prio = 0 if (self._supervisor is not None
+                     and "supervisor" in (msg.subject or "").lower()) else 1
+        with self._seq_lock:
+            seq = self._seq
+            self._seq += 1
+        self._queue.put((prio, seq, msg))
 
     def _process_email(self, msg) -> None:
         """Process a single email: inject into chat, mark read, auto-reply."""

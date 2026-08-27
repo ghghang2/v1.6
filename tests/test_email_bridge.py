@@ -313,6 +313,67 @@ def test_bridge_parse_addr():
     assert EmailBridge._parse_addr("nobody") is None
 
 
+def test_supervisor_email_gets_priority_over_normal():
+    """A supervisor email enqueued after a normal email is dequeued first.
+
+    This is the real-time guarantee: even if a normal email turn is already
+    queued (or in flight), a supervisor question jumps the queue so it is
+    answered in real-time rather than waiting behind the normal turn.
+    """
+    from nbchat.tui.email_bridge import EmailBridge
+    from nbchat.core.supervisor import Supervisor
+
+    agent = TerminalAgent(color=False)
+    sup = Supervisor(agent, interval=60, cooldown=300)
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1, supervisor=sup)
+
+    normal = email_inbox.EmailMessage(
+        message_id="<n@x>", from_addr=email_smtp.LOGIN,
+        subject="nbchat: long task", body="do the long thing",
+        date=None, uid="1",
+    )
+    sup_msg = email_inbox.EmailMessage(
+        message_id="<s@x>", from_addr=email_smtp.LOGIN,
+        subject="supervisor: what are you doing?", body="status?",
+        date=None, uid="2",
+    )
+
+    # Enqueue the normal email first, then the supervisor email.
+    bridge._enqueue(normal)
+    bridge._enqueue(sup_msg)
+
+    # The supervisor email must come out first.
+    _p1, _s1, first = bridge._queue.get_nowait()
+    _p2, _s2, second = bridge._queue.get_nowait()
+    assert first is sup_msg, "supervisor email should be dequeued first"
+    assert second is normal, "normal email should be dequeued second"
+    assert _p1 == 0 and _p2 == 1, "supervisor priority 0, normal priority 1"
+
+
+def test_normal_emails_keep_fifo_order_without_supervisor():
+    """Without a supervisor, all emails get priority 1 and stay FIFO."""
+    from nbchat.tui.email_bridge import EmailBridge
+
+    agent = TerminalAgent(color=False)
+    bridge = EmailBridge(agent, auto_reply=False, poll_interval=1)
+
+    msgs = [
+        email_inbox.EmailMessage(
+            message_id=f"<{i}@x>", from_addr=email_smtp.LOGIN,
+            subject="nbchat: task", body=str(i), date=None, uid=str(i),
+        )
+        for i in range(3)
+    ]
+    for m in msgs:
+        bridge._enqueue(m)
+
+    out = []
+    while not bridge._queue.empty():
+        _p, _s, m = bridge._queue.get_nowait()
+        out.append(m)
+    assert out == msgs, "normal emails should be processed FIFO"
+
+
 def test_bridge_start_stop_lifecycle():
     agent = TerminalAgent(color=False)
     from nbchat.tui.email_bridge import EmailBridge
@@ -419,7 +480,7 @@ def _poll_bridge(bridge):
     """
     bridge._detect_and_enqueue()
     while not bridge._queue.empty():
-        msg = bridge._queue.get_nowait()
+        _prio, _seq, msg = bridge._queue.get_nowait()
         bridge._process_email(msg)
 
 
