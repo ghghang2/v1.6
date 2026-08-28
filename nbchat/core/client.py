@@ -95,4 +95,4 @@ class MetricsLoggingClient:
 
 
 def get_client() -> MetricsLoggingClient:
-    return MetricsLoggingClient(OpenAI(base_url=f"{SERVER_URL}/v1", api_key="sk-local"))
+    return MetricsLoggingClient(OpenAI(base_url=f"{SERVER_URL}/v1", api_key="sk-il7yefsdb1uzd1"))
