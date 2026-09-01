@@ -29,3 +29,6 @@ nbchat/channels/node_modules/
 # --- Misc ---
 Untitled.ipynb
 repo_overview.md
+
+# --- Stale runtime state ---
+*.pid
